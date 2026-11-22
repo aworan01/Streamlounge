@@ -6,13 +6,14 @@ on:
     paths:
       - '*.swift'
       - 'project.yml'
+      - 'Podfile'
       - '.github/workflows/build-tvos.yml'
 permissions:
   contents: read
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Check SDK and install XcodeGen
@@ -23,10 +24,14 @@ jobs:
           brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
+      - name: Install tvOS VLC library
+        run: |
+          command -v pod >/dev/null || brew install cocoapods
+          pod install
       - name: Build release for Apple TV hardware
         run: |
           set -o pipefail
-          xcodebuild -project StreamLoungeTV.xcodeproj -scheme StreamLoungeTV \
+          xcodebuild -workspace StreamLoungeTV.xcworkspace -scheme StreamLoungeTV \
             -configuration Release -sdk appletvos -destination 'generic/platform=tvOS' \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             ARCHS=arm64 build 2>&1 | tee build.log
@@ -36,7 +41,7 @@ jobs:
           APP=build/Build/Products/Release-appletvos/StreamLoungeTV.app
           test -f "$APP/StreamLoungeTV"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$APP/Info.plist" | grep -x AppleTVOS
-          lipo "build/Build/Products/Release-appletvos/StreamLoungeTV.app/StreamLoungeTV" -verify_arch arm64
+          xcrun lipo "$APP/StreamLoungeTV" -verify_arch arm64
           mkdir -p dist/Payload
           cp -R "$APP" dist/Payload/
           cd dist
