@@ -1,3 +1,12 @@
+## v0.3.5 — SwiftUI Settings selection compiler hotfix
+
+- Fixes the Xcode 26.2 compilation failure at `ConfirmSelection.swift:27:25` ("compiler unable to type-check this expression in reasonable time").
+- Breaks the large generic SwiftUI view expression into separate summary, panel, and choice-row views. **This is a compiler-performance refactor, not a change to preference storage.**
+- Preserves visible cyan focus highlighting; the committed choice retains a checkmark, while moving the Siri Remote focus **does not modify** the setting.
+- Press Select to commit, or Back/Cancel to leave the prior setting unchanged.
+- Retains KSPlayer, M3U protection metadata and all v0.3.4 functionality.
+- Swift syntax and platform-independent regression tests have been run; a full Xcode/tvOS build is still required.
+
 ## v0.3.4 — Playlist ClearKey / KS rendering / Focus fix
 
 - M3U parser now retains `#KODIPROP` manifest/DRM metadata and `#EXTVLCOPT` user-agent/referrer per channel.

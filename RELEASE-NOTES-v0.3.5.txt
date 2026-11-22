@@ -1,0 +1,22 @@
+Stream Lounge TV v0.3.5 — Fix Xcode 26.2 SwiftUI type-check timeout
+
+From v0.3.4 replace ConfirmSelection.swift and project.yml. The corresponding
+README.md documents this fix. No other application source or build files change.
+
+Affected Xcode error:
+ConfirmSelection.swift:27:25: compiler is unable to type-check this expression
+in reasonable time; try breaking up the expression into distinct sub-expressions.
+
+Fix:
+- Extracted the button summary, option picker modal, and choice row into
+  isolated SwiftUI subviews so the compiler type-checks smaller expressions.
+- Retained per-row @FocusState, visible cyan focus and checkmark of saved value.
+- Only an option Button action assigns to the binding. Navigation/Back never do.
+- MARKETING_VERSION 0.3.5, CURRENT_PROJECT_VERSION 15.
+
+Verification completed here:
+- Linux swiftc frontend syntax parse of Swift source files.
+- Standalone model and ClearKey/M3U smoke tests.
+- ZIP integrity checks.
+Not verified: Xcode compilation, device focus behaviour, actual KSPlayer/DRM
+playback. Please share the next GitHub log if another error appears.
