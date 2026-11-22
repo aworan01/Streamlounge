@@ -20,6 +20,7 @@ import TVVLCKit
     private var resumed=false
     private var lastProgress=Date.distantPast
     private var monitor: Task<Void,Never>?
+    private var clearKeyTask: Task<Void,Never>?
     private var started = Date()
     @Published private(set) var paused = false
     @Published private(set) var qualityCap: Double = 0
@@ -85,8 +86,9 @@ import TVVLCKit
     private var options: UserDefaults { .standard }
     func start(_ item: Media, force: String? = nil) {
         stop(); active=item; paused=false; retried=false;resumed=false
-        let preference=force ?? options.string(forKey:"engine") ?? "Auto"
-        let recovered=PlaybackCrashGuard.recovered(item)
+        let encrypted = ClearKeyVault.shared.enabled(for:item.url) != nil
+        let preference=force ?? (encrypted ? "KSPlayer" : (options.string(forKey:"engine") ?? "Auto"))
+        let recovered=PlaybackCrashGuard.recovered(item) && !encrypted
         automatic = preference == "Auto" && !recovered
         // Prefer the system's hardware decoding for HLS UHD/HDR. VLC remains
         // an explicit choice or an automatic fallback for incompatible streams.
@@ -95,12 +97,14 @@ import TVVLCKit
         if recovered {status="Previous playback stopped unexpectedly; using the native player for recovery."}
         #if canImport(KSPlayerUI) && canImport(KSPlayer)
         if preference == "KSPlayer", !recovered {launch("KSPlayer");return}
+        if preference == "Auto",extensionHint == "mpd" {launch("KSPlayer");return}
         #endif
         launch(useVLC ? "VLC" : "AVPlayer")
     }
     private func launch(_ next: String) {
         guard let current=active,let url=httpURL(current.url) else {status="Invalid stream URL";return}
-        monitor?.cancel();native.pause();native.replaceCurrentItem(with:nil);vlc.stop()
+        monitor?.cancel();clearKeyTask?.cancel();clearKeyTask=nil
+        native.pause();native.replaceCurrentItem(with:nil);vlc.stop()
         #if canImport(KSPlayerUI) && canImport(KSPlayer)
         if engine == "KSPlayer" && next != "KSPlayer" {ksPlayer.close()}
         #endif
@@ -110,8 +114,25 @@ import TVVLCKit
         let cache=options.object(forKey:"bufferSeconds") as? Double ?? 5
         #if canImport(KSPlayerUI) && canImport(KSPlayer)
         if next == "KSPlayer" {
-            ksPlayer.open(url)
-            status="KSPlayer starting • Choose FFmpeg first in Settings if UHD has audio but no picture."
+            if let profile = ClearKeyVault.shared.enabled(for:current.url) {
+                status = "Requesting authorized ClearKey for KSPlayer…"
+                clearKeyTask = Task { [weak self] in
+                    do {
+                        let keyHex = try await ClearKeyLicenseService.resolve(profile)
+                        guard !Task.isCancelled, let self,
+                              self.active?.id == current.id, self.engine == "KSPlayer" else {return}
+                        self.ksPlayer.open(url,clearKeyHex:keyHex)
+                        self.status="KSPlayer FFmpeg ClearKey playback requested (CENC/AES-CTR)."
+                    } catch {
+                        guard !Task.isCancelled, let self,
+                              self.active?.id == current.id else {return}
+                        self.status="ClearKey: \(error.localizedDescription)"
+                    }
+                }
+            } else {
+                ksPlayer.open(url)
+                status="KSPlayer starting • Choose FFmpeg first in Settings if UHD has audio but no picture."
+            }
         }
         #endif
         if next == "VLC" {
@@ -343,7 +364,9 @@ import TVVLCKit
     }
     func stop(){
         if let item=active,item.kind != .live {sampleProgress()}
-        monitor?.cancel();monitor=nil;native.pause();native.replaceCurrentItem(with:nil);vlc.stop()
+        monitor?.cancel();monitor=nil
+        clearKeyTask?.cancel();clearKeyTask=nil
+        native.pause();native.replaceCurrentItem(with:nil);vlc.stop()
         #if canImport(KSPlayerUI) && canImport(KSPlayer)
         ksPlayer.close()
         #endif
@@ -393,6 +416,7 @@ struct FullPlayer:View {
     let onClose:()->Void
     @State private var visible=true
     @State private var panel:String?=nil
+    @State private var showClearKeyEditor=false
     @State private var returnFocus="pause"
     @State private var channelSourceID=""
     @State private var channelGroup="All groups"
@@ -467,6 +491,9 @@ struct FullPlayer:View {
                 channelGroup=item.group
                 assignFocus("channel-"+item.id)
             }
+        }
+        .sheet(isPresented:$showClearKeyEditor) {
+            ClearKeyEditor(streamURL:item.url) { session.start(item,force:"KSPlayer") }
         }
         .onPlayPauseCommand{session.togglePause()}
         .onExitCommand{if panel != nil {closePanel()} else if visible {hide()} else {onClose()}}
@@ -631,6 +658,9 @@ struct FullPlayer:View {
                     ForEach(session.playerChoices,id:\.self){engine in option("engine-"+engine,engine,chosen:session.engine==engine){session.chooseEngine(engine)}}
                     option("videoOutput","Reconnect video output"){session.reconnectVideoOutput()}
                     option("reload","Reload stream"){session.reload()}
+                    option("clearKey","ClearKey keys / license server") {
+                        closePanel();showClearKeyEditor=true
+                    }
                     if session.engine == "KSPlayer" {Text("KSPlayer's video and audio tracks are selectable from the Stream Lounge controls. For UHD without a picture, select FFmpeg first in Settings and reopen the stream.").font(.caption).foregroundStyle(.secondary)}
                 default:
                     Text(item.name).font(.system(size:27,weight:.semibold));Text("Playlist: "+sourceName);Text("Category: "+item.group);Text("Engine: "+session.engine)

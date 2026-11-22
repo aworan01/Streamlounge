@@ -6,8 +6,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: 0.3.1
-    CURRENT_PROJECT_VERSION: '10'
+    MARKETING_VERSION: 0.3.3
+    CURRENT_PROJECT_VERSION: '13'
 targets:
   StreamLoungeTV:
     type: application
@@ -17,12 +17,14 @@ targets:
     - Models.swift
     - Playback.swift
     - Settings.swift
+    - ConfirmSelection.swift
     - EPG.swift
     - GuideUI.swift
     - ViewingData.swift
     - LocalM3UServer.swift
     - MovieDetailsView.swift
     - KSPlayerBridge.swift
+    - ClearKey.swift
     - Assets.xcassets
     info:
       path: Info.plist
@@ -37,8 +39,17 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.streamlounge.tv
         TARGETED_DEVICE_FAMILY: '3'
-        ASSETCATALOG_COMPILER_APPICON_NAME: 'App Icon'
+        ASSETCATALOG_COMPILER_APPICON_NAME: App Icon
         CODE_SIGNING_ALLOWED: 'NO'
         CODE_SIGNING_REQUIRED: 'NO'
     scheme:
       gatherCoverageData: false
+    dependencies:
+    - package: KSPlayer
+      product: KSPlayer
+    - package: KSPlayer
+      product: KSPlayerUI
+packages:
+  KSPlayer:
+    url: https://github.com/kingslay/KSPlayer.git
+    exactVersion: 5.6.2

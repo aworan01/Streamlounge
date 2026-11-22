@@ -13,7 +13,7 @@ import Darwin
     @Published private(set) var running = false
     private var listener: NWListener?
     private let port: UInt16 = 8877
-    var onM3U: ((String) async -> Bool)?
+    var onM3U: ((String, String) async -> Bool)?
 
     func start() {
         guard listener == nil else {return}
@@ -77,7 +77,15 @@ import Darwin
                 guard self.running, sentPIN == self.pin else {self.reply(conn,status:403,body:"Incorrect transfer PIN");return}
                 guard let text=String(data:payload,encoding:.utf8) ?? String(data:payload,encoding:.isoLatin1),text.contains("#EXTM3U") else {self.reply(conn,status:400,body:"Not an M3U playlist");return}
                 self.status="Receiving playlist…"
-                let success=await self.onM3U?(text) ?? false
+                let rawName=headers.first(where:{$0.lowercased().hasPrefix("x-playlist-name:")})
+                    .map{$0.split(separator:":",maxSplits:1).last?.trimmingCharacters(in:.whitespaces) ?? ""} ?? ""
+                let playlistName=(rawName.removingPercentEncoding ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
+                guard !playlistName.isEmpty,playlistName.count<=80,
+                      !playlistName.unicodeScalars.contains(where:{$0.value < 32}) else {
+                    self.reply(conn,status:400,body:"Enter a playlist name (up to 80 characters)")
+                    return
+                }
+                let success=await self.onM3U?(text,playlistName) ?? false
                 if success {
                     self.reply(conn,status:200,body:"Playlist saved and imported. You can return to Apple TV.")
                     self.stop()
@@ -98,8 +106,11 @@ import Darwin
     <title>Stream Lounge TV local import</title><style>body{font:17px system-ui;background:#131b29;color:#fff;max-width:560px;margin:55px auto;padding:18px}input,button{font:inherit;padding:12px;margin:12px 0;width:100%}button{background:#67e8f9;color:#101722;border:0;border-radius:8px}</style>
     <h1>Stream Lounge TV</h1><p>Choose an M3U file on this device. Your data goes directly to your Apple TV on your local network.</p>
     <p>Enter the six-digit PIN displayed on the TV:</p><input id="pin" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="Transfer PIN">
-    <input id="file" type="file" accept=".m3u,.m3u8,text/plain"><button onclick="send()">Send playlist</button><p id="status"></p>
-    <script>async function send(){const f=document.getElementById('file').files[0],p=document.getElementById('pin').value,s=document.getElementById('status');if(!f||p.length!=6){s.textContent='Choose a file and enter the six-digit PIN';return;}try{const r=await fetch('/import',{method:'POST',headers:{'X-Transfer-PIN':p,'Content-Type':'text/plain'},body:f});s.textContent=await r.text()}catch(e){s.textContent=String(e)}}</script>
+    <input id="file" type="file" accept=".m3u,.m3u8,text/plain">
+    <label for="name">Playlist name on Apple TV</label><input id="name" maxlength="80" placeholder="e.g. Family TV">
+    <button onclick="send()">Send playlist</button><p id="status"></p>
+    <script>document.getElementById('file').addEventListener('change',function(){const f=this.files[0],n=document.getElementById('name');if(f&&!n.value)n.value=f.name.replace(/\\.(m3u8?|txt)$/i,'');});
+    async function send(){const f=document.getElementById('file').files[0],p=document.getElementById('pin').value,n=document.getElementById('name').value.trim(),s=document.getElementById('status');if(!f||p.length!=6||!n||n.length>80){s.textContent='Choose an M3U file, give it a name and enter the six-digit PIN';return;}try{const r=await fetch('/import',{method:'POST',headers:{'X-Transfer-PIN':p,'X-Playlist-Name':encodeURIComponent(n),'Content-Type':'text/plain'},body:f});s.textContent=await r.text()}catch(e){s.textContent=String(e)}}</script>
     </html>
     """}
     // The IP may not be directly available on all tvOS network configurations;

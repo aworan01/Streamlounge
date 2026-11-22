@@ -102,14 +102,18 @@ struct ManualFocusStyle: ButtonStyle {
         }
         if migrated { save() }
     }
-    func importM3UFile(_ contents:String) async -> Bool {
+    func importM3UFile(_ contents:String, name:String) async -> Bool {
+        let displayName=name.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !displayName.isEmpty,displayName.count<=80 else {
+            message="Enter a playlist name of 1–80 characters.";return false
+        }
         let id=UUID()
         let path=importFolder.appendingPathComponent(id.uuidString+".m3u")
         do {
             try FileManager.default.createDirectory(at:importFolder,withIntermediateDirectories:true)
             try Data(contents.utf8).write(to:path,options:.atomic)
         } catch {message="Could not store imported playlist in the TV cache: \(error.localizedDescription)";return false}
-        let source=Source(id:id,name:"Imported M3U "+Date().formatted(date:.abbreviated,time:.shortened),address:path.path,type:"Local M3U")
+        let source=Source(id:id,name:displayName,address:path.path,type:"Local M3U")
         let ok=await load(source)
         if !ok {try? FileManager.default.removeItem(at:path)}
         return ok
@@ -234,6 +238,7 @@ struct Home:View {
     @State private var add=false
     @State private var guideItem:Media?
     @State private var removeSource:Source?
+    @State private var showExitConfirmation=false
     private var base:[Media] {
         let all=library.media
         switch page {
@@ -270,7 +275,13 @@ struct Home:View {
                         if direction == .right { moveSidebarRight() }
                     }
                     Spacer(minLength:0)
-                    Text("v0.2.6").font(.system(size:19)).foregroundStyle(.secondary)
+                    Button { showExitConfirmation=true } label: {
+                        Label("Exit",systemImage:"rectangle.portrait.and.arrow.right")
+                            .font(.system(size:labelSize,weight:.medium))
+                            .frame(maxWidth:.infinity,alignment:.leading)
+                            .foregroundStyle(.white)
+                    }.buttonStyle(CompactFocusStyle())
+                    Text("v0.3.3").font(.system(size:19)).foregroundStyle(.secondary)
                 }.padding(18).frame(width:300).frame(maxHeight:.infinity,alignment:.topLeading).focusSection().background(Color.white.opacity(0.045))
             }
             VStack(alignment:.leading,spacing:14) {
@@ -312,6 +323,15 @@ struct Home:View {
         .sheet(item:$editor){s in SourceEditor(library:library,source:s)}
         .sheet(isPresented:$add){SourceEditor(library:library,source:Source(name:"",address:"",type:"M3U URL"))}
         .alert("Remove source?",isPresented:Binding(get:{removeSource != nil},set:{if !$0 {removeSource=nil}})){Button("Remove",role:.destructive){if let s=removeSource{library.remove(s)};removeSource=nil};Button("Cancel",role:.cancel){removeSource=nil}}
+        .alert("Exit Stream Lounge TV?",isPresented:$showExitConfirmation) {
+            Button("Stop and return to Dashboard",role:.destructive) {
+                playback.stop();selected=nil;play=nil;lanImporter.stop();page = .home
+                library.message = "Playback stopped. Press the Apple TV Home button to leave the app."
+            }
+            Button("Cancel",role:.cancel) {}
+        } message: {
+            Text("tvOS does not provide a public API to quit an app. Exit will stop playback and return to the Dashboard. Use the TV/Home button to leave the app.")
+        }
     }
     private func openPage(_ p:Page,enter:Bool) {
         if p != page {playback.stop(); selected=nil; filter="All groups";sourceFilter="All sources";query="";page=p}
@@ -430,7 +450,7 @@ struct Home:View {
         HStack(alignment:.top,spacing:30){
             VStack(alignment:.leading,spacing:10){
                 Text("Sources").font(.caption).foregroundStyle(.secondary)
-                Picker("Source",selection:$sourceFilter){Text("All sources").tag("All sources");ForEach(library.sources){s in Text(s.name).tag(s.id.uuidString)}}.onChange(of:sourceFilter){_ in filter="All groups"}
+                ConfirmSelection(title: "Source", selection: $sourceFilter, options: [ConfirmOption("All sources", "All sources")] + library.sources.map { ConfirmOption($0.id.uuidString, $0.name) }).onChange(of:sourceFilter){_ in filter="All groups"}
                 Text("Categories").font(.caption).foregroundStyle(.secondary)
                 ScrollView {LazyVStack(alignment:.leading,spacing:12){ForEach(["All groups"]+groups,id:\.self){g in Button {filter=g} label:{Text(g).lineLimit(1).frame(maxWidth:.infinity,alignment:.leading).foregroundStyle(filter == g ? Color.cyan : Color.primary)}}}}
             }.frame(width:365)
@@ -451,8 +471,8 @@ struct Home:View {
         VStack(alignment:.leading,spacing:20){HStack(spacing:18){Button{add=true}label:{Label("Add source",systemImage:"plus")}.focused($homeFocus,equals:.content).disabled(library.busy)
             Button(lanImporter.running ? "Stop local transfer" : "Import M3U from phone/computer"){
                 if lanImporter.running {lanImporter.stop()} else {
-                    lanImporter.onM3U = { contents in
-                        await library.importM3UFile(contents)
+                    lanImporter.onM3U = { contents, name in
+                        await library.importM3UFile(contents,name:name)
                     }
                     lanImporter.start()
                 }
@@ -487,7 +507,7 @@ struct SourceEditor:View {
     @Environment(\.dismiss) private var dismiss
     var body:some View {ScrollView {VStack(alignment:.leading,spacing:24){
         Text("Playlist / account").font(.title.bold())
-        Picker("Source type",selection:$source.type){ForEach(["M3U URL","Pasted M3U","Xtream"] + (source.type == "Local M3U" ? ["Local M3U"] : []),id:\.self){Text($0).tag($0)}}.disabled(library.busy || source.type == "Local M3U")
+        ConfirmSelection(title: "Source type", selection: $source.type, options: (["M3U URL","Pasted M3U","Xtream"] + (source.type == "Local M3U" ? ["Local M3U"] : [])).map { ConfirmOption($0, $0) }).disabled(library.busy || source.type == "Local M3U")
         TextField("Display name",text:$source.name)
         if source.type == "Pasted M3U" {TextField("Paste M3U text using Apple TV keyboard",text:$source.pasted)} else if source.type == "Local M3U" {Text("Stored locally on Apple TV — use Playlists → Refresh to reload the imported file").foregroundStyle(.secondary)} else {TextField(source.type == "Xtream" ? "Server URL (https://host:port)" : "Playlist URL",text:$source.address)}
         if source.type == "Xtream" {TextField("Username",text:$source.user);SecureField("Password",text:$source.password)}

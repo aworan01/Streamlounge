@@ -4,7 +4,7 @@ struct SettingsView:View {
     @ObservedObject var library:Library
     var entryFocus:FocusState<HomeFocus?>.Binding
     @AppStorage("textDensity") private var textDensity="Compact"
-    private let sections=["Playback","Appearance","Dashboard","EPG / TV Guide","Data management","About"]
+    private let sections=["Playback","ClearKey","Appearance","Dashboard","EPG / TV Guide","Data management","About"]
     private func enter(_ name:String){section=name;Task{@MainActor in await Task.yield();entryFocus.wrappedValue = .settingsOption}}
     @AppStorage("engine") private var engine="Auto"
     @AppStorage("hardware") private var hardware=true
@@ -32,12 +32,10 @@ struct SettingsView:View {
             ScrollView { VStack(alignment:.leading,spacing:26){Text(section).font(.title2.bold())
                 switch section {
                 case "Playback":
-                    Picker("Player engine",selection:$engine){
-                        ForEach(["Auto","AVPlayer","VLC"],id:\.self){Text($0).tag($0)}
-                        #if canImport(KSPlayerUI) && canImport(KSPlayer)
-                        Text("KSPlayer (experimental)").tag("KSPlayer")
-                        #endif
-                    }.focused(entryFocus,equals:.settingsOption)
+                    ConfirmSelection(title: "Player engine", selection: $engine, options: [
+                        ConfirmOption("Auto", "Auto"), ConfirmOption("AVPlayer", "AVPlayer"),
+                        ConfirmOption("VLC", "VLC"), ConfirmOption("KSPlayer", "KSPlayer")
+                    ]).focused(entryFocus, equals: .settingsOption)
                     .onAppear {
                         #if !canImport(KSPlayerUI)
                         if engine == "KSPlayer" {engine="Auto"}
@@ -45,28 +43,30 @@ struct SettingsView:View {
                     }
                     Text("Auto starts 4K/HDR HLS streams with the native AVPlayer decoder; VLC is reserved for incompatible containers or as fallback. If a stream crashed recently, native recovery mode is selected next launch.").font(.caption).foregroundStyle(.secondary)
                     #if canImport(KSPlayerUI) && canImport(KSPlayer)
-                    Picker("KSPlayer decoder",selection:$ksDecoder){
-                        Text("Native first").tag("Native first")
-                        Text("FFmpeg first").tag("FFmpeg first")
-                    }
+                    ConfirmSelection(title: "KSPlayer decoder", selection: $ksDecoder, options: [
+                        ConfirmOption("Native first", "Native first"),
+                        ConfirmOption("FFmpeg first", "FFmpeg first")
+                    ])
                     Text("KSPlayer 5.6.2 normally starts with native decoding. FFmpeg first may help HEVC in unusual IPTV containers, but some 4K formats may still exceed Apple TV decoder support. Reopen the stream after changing this option.").font(.caption).foregroundStyle(.secondary)
                     #endif
                     Toggle("VLC hardware decoding",isOn:$hardware)
                     Text("If a UHD stream has sound but no picture, try disabling VLC hardware decoding and reopening it. Software decoding may be too demanding for some Apple TVs.").font(.caption).foregroundStyle(.secondary)
-                    Picker("Buffer duration",selection:$buffer){ForEach([2.0,5.0,10.0,20.0],id:\.self){Text("\(Int($0)) seconds").tag($0)}}
+                    ConfirmSelection(title: "Buffer duration", selection: $buffer, options: [2.0,5.0,10.0,20.0].map { ConfirmOption($0, "\(Int($0)) seconds") })
                     Text("Original resolution; the player does not request downscaling. Preferences apply when a stream is reopened. AVPlayer and VLC may choose variants according to their own policies.").font(.caption).foregroundStyle(.secondary)
-                case "Appearance":Picker("Theme",selection:$appearance){ForEach(["Night Owl","Black OLED"],id:\.self){Text($0).tag($0)}}.focused(entryFocus,equals:.settingsOption)
-                    Picker("Text size",selection:$textDensity){ForEach(["Compact","Standard","Large"],id:\.self){Text($0).tag($0)}}
+                case "ClearKey":
+                    ClearKeySettingsPanel(entryFocus:entryFocus)
+                case "Appearance":ConfirmSelection(title: "Theme", selection: $appearance, options: ["Night Owl", "Black OLED"].map { ConfirmOption($0, $0) }).focused(entryFocus, equals: .settingsOption)
+                    ConfirmSelection(title: "Text size", selection: $textDensity, options: ["Compact", "Standard", "Large"].map { ConfirmOption($0, $0) })
                     Text("Compact reduces sidebar and live channel text. Long channel names wrap instead of being cut off.").font(.caption).foregroundStyle(.secondary)
                 case "Dashboard":
-                    Picker("Start page",selection:$startPage){ForEach(["Dashboard","Live TV","Movies","Series","Favorites"],id:\.self){Text($0).tag($0)}}.focused(entryFocus,equals:.settingsOption)
+                    ConfirmSelection(title: "Start page", selection: $startPage, options: ["Dashboard","Live TV","Movies","Series","Favorites"].map { ConfirmOption($0, $0) }).focused(entryFocus, equals: .settingsOption)
                     Toggle("Remember last channel",isOn:$rememberLastChannel)
                     Toggle("Refresh playlists when app launches",isOn:$autoRefreshPlaylists)
                     Text("Automatic refresh uses the current playlist URL and retains existing favorite IDs when the source entries remain identical.").font(.caption).foregroundStyle(.secondary)
                 case "EPG / TV Guide":
                     EPGSettingsPanel(library:library,entryFocus:entryFocus)
                 case "Data management":Button("Clear viewing history"){clearHistory=true}.focused(entryFocus,equals:.settingsOption);Button("Clear watch progress"){library.forgetProgress()};Text("Playlists and favorites are retained. Watch progress and metadata are stored locally.").font(.caption).foregroundStyle(.secondary)
-                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.3.1");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
+                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.3.3");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. KSPlayer 5.6.2: GPL-3.0. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth:.infinity,alignment:.leading).padding(16) }.frame(maxHeight:.infinity,alignment:.topLeading).focusSection()
         }.alert("Clear viewing history?",isPresented:$clearHistory){Button("Clear",role:.destructive){library.history=[];library.save()};Button("Cancel",role:.cancel){}}
@@ -96,13 +96,13 @@ struct EPGSettingsPanel:View {
             Toggle("Provider EPG",isOn:$provider);Toggle("Custom XMLTV",isOn:$custom);Toggle("Automatic EPGShare01",isOn:$external)
             TextField("Country codes (blank = automatic)",text:$countries)
             Text("Examples: UK, US, NG, ZA. Playlist-specific country settings override this list. Coverage varies by source.").font(.caption).foregroundStyle(.secondary)
-            Picker("Source priority",selection:$order){ForEach(["Provider first","Custom first","External first"],id:\.self){Text($0).tag($0)}}
+            ConfirmSelection(title: "Source priority", selection: $order, options: ["Provider first","Custom first","External first"].map { ConfirmOption($0, $0) })
             Toggle("Borrow guide from equivalent channels",isOn:$borrow)
-            Picker("Refresh every",selection:$interval){ForEach([3,6,12,24,48],id:\.self){Text("\($0) hours").tag($0)}}
+            ConfirmSelection(title: "Refresh every", selection: $interval, options: [3,6,12,24,48].map { ConfirmOption($0, "\($0) hours") })
             Toggle("Refresh on app launch",isOn:$onStart);Toggle("Refresh after playlist import",isOn:$onImport)
-            Picker("Days ahead",selection:$days){ForEach(1...14,id:\.self){Text("\($0) days").tag($0)}}
-            Picker("Past days",selection:$past){ForEach(0...7,id:\.self){Text("\($0) days").tag($0)}}
-            Picker("Global time correction",selection:$offset){ForEach(Array(stride(from:-720,through:720,by:15)),id:\.self){Text("\($0) min").tag($0)}}
+            ConfirmSelection(title: "Days ahead", selection: $days, options: Array(1...14).map { ConfirmOption($0, "\($0) days") })
+            ConfirmSelection(title: "Past days", selection: $past, options: Array(0...7).map { ConfirmOption($0, "\($0) days") })
+            ConfirmSelection(title: "Global time correction", selection: $offset, options: Array(stride(from: -720, through: 720, by: 15)).map { ConfirmOption($0, "\($0) min") })
             Text("Refresh runs while the app is active; tvOS may suspend it in the background. Time correction and source changes apply at the next update.").font(.caption).foregroundStyle(.secondary)
             Text("EPG sources and statistics").font(.headline)
             ForEach(library.sources){source in

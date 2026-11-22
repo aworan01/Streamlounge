@@ -17,13 +17,22 @@ import KSPlayerUI
         view.isMaskShow = false
     }
 
-    func open(_ url: URL) {
+    func open(_ url: URL, clearKeyHex: String? = nil) {
         // In 5.6.2, secondPlayerType alone does NOT force FFmpeg. Expose a
         // separate FFmpeg-first choice for troublesome MPEG-TS/HEVC streams.
         let decoder = UserDefaults.standard.string(forKey:"ksDecoder") ?? "Native first"
-        KSOptions.firstPlayerType = decoder == "FFmpeg first" ? KSMEPlayer.self : KSAVPlayer.self
-        KSOptions.secondPlayerType = KSMEPlayer.self
-        view.set(url:url,options:KSOptions())
+        // ClearKey CENC requires FFmpeg's input demuxer. Both DASH and MOV
+        // support cenc_decryption_key for single-key AES-CTR when built with
+        // that demuxer; this is not a general DRM/CDM implementation.
+        let encrypted = clearKeyHex != nil
+        KSOptions.firstPlayerType = (encrypted || decoder == "FFmpeg first") ? KSMEPlayer.self : KSAVPlayer.self
+        KSOptions.secondPlayerType = encrypted ? nil : KSMEPlayer.self
+        let playbackOptions = KSOptions()
+        if let key = clearKeyHex {
+            let optionName = url.pathExtension.lowercased() == "mpd" ? "cenc_decryption_key" : "decryption_key"
+            playbackOptions.formatContextOptions[optionName] = key
+        }
+        view.set(url:url,options:playbackOptions)
         view.play()
         view.isMaskShow = false
     }
