@@ -1,4 +1,5 @@
-name: Build tvOS IPA
+name: Build tvOS IPA (Xcode 26.2 + KSPlayer)
+
 on:
   workflow_dispatch:
   push:
@@ -7,52 +8,92 @@ on:
       - '*.swift'
       - 'project.yml'
       - 'Podfile'
+      - 'Assets.xcassets/**'
       - '.github/workflows/build-tvos.yml'
+
 permissions:
   contents: read
+
 jobs:
   build:
-    runs-on: macos-15
-    timeout-minutes: 45
+    runs-on: macos-26
+    timeout-minutes: 75
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
-      - name: Check SDK and install XcodeGen
+
+      - name: Verify Xcode and Swift BEFORE resolving KSPlayer
+        shell: bash
         run: |
+          set -euo pipefail
+          test -d "$DEVELOPER_DIR" || {
+            echo "::error::Xcode 26.2 is missing on this runner"
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          }
           xcodebuild -version
-          xcodebuild -showsdks
+          swift --version
           xcrun --sdk appletvos --show-sdk-version
-          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
-      - name: Generate Xcode project
+          xcodebuild -version | grep -q 'Xcode 26\.2' || {
+            echo "::error::KSPlayer 5.6.2 requires Swift tools 6.2. This workflow must use Xcode 26.2."
+            exit 1
+          }
+
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          command -v xcodegen || brew install xcodegen
+
+      - name: Generate project
         run: xcodegen generate --spec project.yml
-      - name: Install tvOS VLC library
+
+      - name: Resolve KSPlayer dependencies
+        run: xcodebuild -resolvePackageDependencies -project StreamLoungeTV.xcodeproj -scheme StreamLoungeTV
+
+      - name: Install TVVLCKit with CocoaPods
+        shell: bash
         run: |
-          command -v pod >/dev/null || brew install cocoapods
+          command -v pod || brew install cocoapods
           pod install
-      - name: Build release for Apple TV hardware
+
+      - name: Run ClearKey smoke tests
+        shell: bash
+        run: bash Tests/run-clearkey-smoke.sh
+
+      - name: Build unsigned tvOS app
+        shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           xcodebuild -workspace StreamLoungeTV.xcworkspace -scheme StreamLoungeTV \
             -configuration Release -sdk appletvos -destination 'generic/platform=tvOS' \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             ARCHS=arm64 build 2>&1 | tee build.log
-      - name: Package unsigned IPA
+
+      - name: Verify tvOS architecture and package unsigned IPA
+        shell: bash
         run: |
           set -euo pipefail
-          APP=build/Build/Products/Release-appletvos/StreamLoungeTV.app
+          APP="build/Build/Products/Release-appletvos/StreamLoungeTV.app"
           test -f "$APP/StreamLoungeTV"
+          test -s "$APP/Assets.car" || {
+            echo "::error::Missing compiled asset catalog"
+            exit 1
+          }
           /usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$APP/Info.plist" | grep -x AppleTVOS
           xcrun lipo "$APP/StreamLoungeTV" -verify_arch arm64
           mkdir -p dist/Payload
           cp -R "$APP" dist/Payload/
-          cd dist
-          zip -qry StreamLoungeTV-unsigned.ipa Payload
-          unzip -t StreamLoungeTV-unsigned.ipa
-      - name: Upload IPA
+          (cd dist && zip -qry StreamLoungeTV-unsigned.ipa Payload)
+          unzip -t dist/StreamLoungeTV-unsigned.ipa
+
+      - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
           name: StreamLoungeTV-unsigned
           path: dist/StreamLoungeTV-unsigned.ipa
           if-no-files-found: error
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
