@@ -13,7 +13,7 @@ import Darwin
     @Published private(set) var running = false
     private var listener: NWListener?
     private let port: UInt16 = 8877
-        var onM3U: ((String)->Void)?
+    var onM3U: ((String) async -> Bool)?
 
     func start() {
         guard listener == nil else {return}
@@ -76,10 +76,15 @@ import Darwin
             Task { @MainActor in
                 guard self.running, sentPIN == self.pin else {self.reply(conn,status:403,body:"Incorrect transfer PIN");return}
                 guard let text=String(data:payload,encoding:.utf8) ?? String(data:payload,encoding:.isoLatin1),text.contains("#EXTM3U") else {self.reply(conn,status:400,body:"Not an M3U playlist");return}
-                self.onM3U?(text)
-                self.status="Playlist received. Processing…"
-                self.reply(conn,status:200,body:"Playlist received. You can return to Apple TV.")
-                self.stop()
+                self.status="Receiving playlist…"
+                let success=await self.onM3U?(text) ?? false
+                if success {
+                    self.reply(conn,status:200,body:"Playlist saved and imported. You can return to Apple TV.")
+                    self.stop()
+                } else {
+                    self.status="Import failed; check the message on Apple TV and retry."
+                    self.reply(conn,status:500,body:"Import failed on Apple TV. Check Playlists for the error.")
+                }
             }
         }
     }

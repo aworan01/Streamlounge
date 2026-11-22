@@ -1,3 +1,21 @@
+# Stream Lounge TV v0.3.1 — tvOS runtime hotfix
+
+This update corrects four issues reported after testing v0.3.0 KSPlayer on Apple TV.
+
+- **LAN import storage**: imported files are written into `Library/Caches/imported-m3u`, not the rejected Application Support folder. Old accessible files are migrated on startup. Cache files are *purgeable* by tvOS, so a removed file must be re-imported; playlist source metadata, channel catalog and favorites remain tracked separately.
+- **LAN import acknowledgement**: the phone/browser now receives success only after the playlist was saved and loaded successfully. A failed import displays a visible error on the Playlists page.
+- **App icon**: `Assets.xcassets/App Icon.brandassets` now matches Xcode's `ASSETCATALOG_COMPILER_APPICON_NAME: App Icon`, with complete 400×240 and 1280×768 layered art from the user's supplied TV artwork. GitHub Actions verifies that the icon asset and Info.plist entry were actually compiled.
+- **KSPlayer controls**: Stream Lounge's focusable fullscreen toolbar now controls KSPlayer play/pause, seeking, audio, subtitle, and video-track selection. The embedded UIKit toolbar is hidden from Siri Remote focus.
+- **KSPlayer 4K diagnostic**: Settings → Playback → KSPlayer decoder provides `Native first` or `FFmpeg first`. Neither guarantees playback of an unsupported HEVC profile, DRM stream, or resource-intensive 4K track.
+
+**Build:** replace existing files with this complete source folder, *delete* the old `Assets.xcassets/AppIcon.brandassets` folder in your GitHub repository, and upload the renamed `Assets.xcassets/App Icon.brandassets` folder. Keep all directories and `.github/workflows` paths intact. Then use Actions → Build KSPlayer tvOS IPA (experimental). A GitHub website ZIP upload does not automatically unpack: upload extracted files/directories through a git client or GitHub Codespaces if preserving nested paths is difficult.
+
+**Important:** The fix is source-validated but not Xcode-compiled in this environment. Test on hardware and attach the build log if GitHub reports any Swift/package or asset-catalog errors. For 4K playback problems, share the Apple TV generation, stream codec/profile/container (without credentials), and playback diagnostics; a missing picture alone cannot establish the decoder's root cause.
+
+**Licensing:** Stream Lounge TV is independent of the IPTVnator brand. IPTVnator code is MIT licensed (4gray), VideoLAN TVVLCKit is LGPL-2.1, and KSPlayer 5.6.2 is GPL-3.0. Distribution of the experimental KSPlayer build must comply with applicable GPL conditions. Use only authorized playlists and streams.
+
+---
+
 # Stream Lounge TV v0.3.0 — test build
 
 A separately named **native SwiftUI tvOS** IPTV app adapting selected IPTVnator v0.25.0 logic. This release builds on the tested v0.2.6 code. It does **not** include channels, subscriptions, movies, streaming credentials, or paid content. Use authorized playlists.

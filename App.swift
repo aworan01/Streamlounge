@@ -83,14 +83,32 @@ struct ManualFocusStyle: ButtonStyle {
     @Published var message = ""
     private let defaults = UserDefaults.standard
     private var cache: URL { FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0].appendingPathComponent("stream-catalog.json") }
-    private var importFolder: URL {FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("imported-m3u",isDirectory:true)}
+    // tvOS local support storage may reject new large playlist files. Keep LAN
+    // imports in the same writable, purgeable cache hierarchy used by the catalog.
+    // A deleted cache is reported clearly on the next refresh (re-import required).
+    private var importFolder: URL { FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0].appendingPathComponent("imported-m3u",isDirectory:true) }
+    private var legacyImportFolder: URL { FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("imported-m3u",isDirectory:true) }
+    private func migrateImportedSources() {
+        var migrated = false
+        for i in sources.indices where sources[i].type == "Local M3U" {
+            let old = URL(fileURLWithPath:sources[i].address)
+            guard old.path.hasPrefix(legacyImportFolder.path+"/"), FileManager.default.fileExists(atPath:old.path) else { continue }
+            let new = importFolder.appendingPathComponent(old.lastPathComponent)
+            do {
+                try FileManager.default.createDirectory(at:importFolder,withIntermediateDirectories:true)
+                if !FileManager.default.fileExists(atPath:new.path) { try FileManager.default.copyItem(at:old,to:new) }
+                sources[i].address = new.path; migrated=true
+            } catch { message = "Could not migrate imported playlist: \(error.localizedDescription)" }
+        }
+        if migrated { save() }
+    }
     func importM3UFile(_ contents:String) async -> Bool {
         let id=UUID()
         let path=importFolder.appendingPathComponent(id.uuidString+".m3u")
         do {
             try FileManager.default.createDirectory(at:importFolder,withIntermediateDirectories:true)
-            try contents.write(to:path,atomically:true,encoding:.utf8)
-        } catch {message="Could not store imported playlist: \(error.localizedDescription)";return false}
+            try Data(contents.utf8).write(to:path,options:.atomic)
+        } catch {message="Could not store imported playlist in the TV cache: \(error.localizedDescription)";return false}
         let source=Source(id:id,name:"Imported M3U "+Date().formatted(date:.abbreviated,time:.shortened),address:path.path,type:"Local M3U")
         let ok=await load(source)
         if !ok {try? FileManager.default.removeItem(at:path)}
@@ -105,6 +123,7 @@ struct ManualFocusStyle: ButtonStyle {
         movieCache = (try? JSONDecoder().decode([String:MovieInformation].self,from:defaults.data(forKey:"movieMetadataV1") ?? Data())) ?? [:]
         PlaybackCrashGuard.inspectPreviousLaunch()
         manualGuideIDs = defaults.dictionary(forKey:"manualGuideIDs") as? [String:String] ?? [:]
+        migrateImportedSources()
         for source in sources {if let data=try? Data(contentsOf:guideFile(source.id)),let cached=try? JSONDecoder().decode(GuideSnapshot.self,from:data){guides[source.id]=cached}}
     }
     func save() {
@@ -118,7 +137,7 @@ struct ManualFocusStyle: ButtonStyle {
         sources.swapAt(index,index+offset);save()
     }
     func watched(_ item:Media) { history.removeAll { $0 == item.id }; history.insert(item.id,at:0); history=Array(history.prefix(100)); defaults.set(history,forKey:"history") }
-    func remove(_ source:Source) { if source.type == "Local M3U" && source.address.hasPrefix(importFolder.path+"/") {try? FileManager.default.removeItem(atPath:source.address)};let ids=Set(media.filter{$0.sourceID == source.id}.map(\.id)); favorites.subtract(ids); history.removeAll{ids.contains($0)}; sources.removeAll{$0.id == source.id}; media.removeAll{$0.sourceID == source.id}; guides[source.id]=nil; attempts[source.id]=nil; try? FileManager.default.removeItem(at:guideFile(source.id)); for id in ids {manualGuideIDs[id]=nil;bookmarks[id]=nil;movieCache[id]=nil};defaults.set(manualGuideIDs,forKey:"manualGuideIDs");if let data=try? JSONEncoder().encode(bookmarks){defaults.set(data,forKey:"vodBookmarksV1")};if let data=try? JSONEncoder().encode(movieCache){defaults.set(data,forKey:"movieMetadataV1")}; save() }
+    func remove(_ source:Source) { if source.type == "Local M3U" && (source.address.hasPrefix(importFolder.path+"/") || source.address.hasPrefix(legacyImportFolder.path+"/")) {try? FileManager.default.removeItem(atPath:source.address)};let ids=Set(media.filter{$0.sourceID == source.id}.map(\.id)); favorites.subtract(ids); history.removeAll{ids.contains($0)}; sources.removeAll{$0.id == source.id}; media.removeAll{$0.sourceID == source.id}; guides[source.id]=nil; attempts[source.id]=nil; try? FileManager.default.removeItem(at:guideFile(source.id)); for id in ids {manualGuideIDs[id]=nil;bookmarks[id]=nil;movieCache[id]=nil};defaults.set(manualGuideIDs,forKey:"manualGuideIDs");if let data=try? JSONEncoder().encode(bookmarks){defaults.set(data,forKey:"vodBookmarksV1")};if let data=try? JSONEncoder().encode(movieCache){defaults.set(data,forKey:"movieMetadataV1")}; save() }
     func load(_ s:Source) async -> Bool {
         guard !busy else { return false }; busy=true; message=""; defer {busy=false}
         var s=s
@@ -433,9 +452,7 @@ struct Home:View {
             Button(lanImporter.running ? "Stop local transfer" : "Import M3U from phone/computer"){
                 if lanImporter.running {lanImporter.stop()} else {
                     lanImporter.onM3U = { contents in
-                        Task { @MainActor in
-                            _ = await library.importM3UFile(contents)
-                        }
+                        await library.importM3UFile(contents)
                     }
                     lanImporter.start()
                 }
@@ -443,6 +460,7 @@ struct Home:View {
             }
             if lanImporter.running {Text("Open "+lanImporter.address+" on your phone or computer. PIN: "+lanImporter.pin).font(.title3).foregroundStyle(.cyan)}
             if !lanImporter.status.isEmpty {Text(lanImporter.status).font(.caption).foregroundStyle(.secondary)}
+            if !library.message.isEmpty {Text(library.message).font(.caption).foregroundStyle(.yellow)}
             ScrollView {LazyVStack(alignment:.leading,spacing:25){ForEach(library.sources){s in HStack{VStack(alignment:.leading){Text(s.name).font(.headline);Text(s.type+" · \(library.media.filter{$0.sourceID==s.id}.count) items").font(.caption).foregroundStyle(.secondary)};Spacer();Button("Refresh"){Task{_ = await library.load(s)}}.disabled(library.busy);Button("EPG"){Task{await library.loadGuide(s)}}.disabled(library.epgBusy);Button("Up"){library.moveSource(s,offset:-1)}.disabled(library.busy || library.sources.first?.id==s.id)
                     Button("Down"){library.moveSource(s,offset:1)}.disabled(library.busy || library.sources.last?.id==s.id)
                     Button("Edit"){editor=s}.disabled(library.busy);Button("Remove"){removeSource=s}.disabled(library.busy)}}}}

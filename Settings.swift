@@ -8,6 +8,7 @@ struct SettingsView:View {
     private func enter(_ name:String){section=name;Task{@MainActor in await Task.yield();entryFocus.wrappedValue = .settingsOption}}
     @AppStorage("engine") private var engine="Auto"
     @AppStorage("hardware") private var hardware=true
+    @AppStorage("ksDecoder") private var ksDecoder="Native first"
     @AppStorage("bufferSeconds") private var buffer:Double=5
     @AppStorage("appearance") private var appearance="Night Owl"
     @AppStorage("startPage") private var startPage="Dashboard"
@@ -43,6 +44,13 @@ struct SettingsView:View {
                         #endif
                     }
                     Text("Auto starts 4K/HDR HLS streams with the native AVPlayer decoder; VLC is reserved for incompatible containers or as fallback. If a stream crashed recently, native recovery mode is selected next launch.").font(.caption).foregroundStyle(.secondary)
+                    #if canImport(KSPlayerUI) && canImport(KSPlayer)
+                    Picker("KSPlayer decoder",selection:$ksDecoder){
+                        Text("Native first").tag("Native first")
+                        Text("FFmpeg first").tag("FFmpeg first")
+                    }
+                    Text("KSPlayer 5.6.2 normally starts with native decoding. FFmpeg first may help HEVC in unusual IPTV containers, but some 4K formats may still exceed Apple TV decoder support. Reopen the stream after changing this option.").font(.caption).foregroundStyle(.secondary)
+                    #endif
                     Toggle("VLC hardware decoding",isOn:$hardware)
                     Text("If a UHD stream has sound but no picture, try disabling VLC hardware decoding and reopening it. Software decoding may be too demanding for some Apple TVs.").font(.caption).foregroundStyle(.secondary)
                     Picker("Buffer duration",selection:$buffer){ForEach([2.0,5.0,10.0,20.0],id:\.self){Text("\(Int($0)) seconds").tag($0)}}
@@ -58,7 +66,7 @@ struct SettingsView:View {
                 case "EPG / TV Guide":
                     EPGSettingsPanel(library:library,entryFocus:entryFocus)
                 case "Data management":Button("Clear viewing history"){clearHistory=true}.focused(entryFocus,equals:.settingsOption);Button("Clear watch progress"){library.forgetProgress()};Text("Playlists and favorites are retained. Watch progress and metadata are stored locally.").font(.caption).foregroundStyle(.secondary)
-                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.3.0");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
+                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.3.1");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth:.infinity,alignment:.leading).padding(16) }.frame(maxHeight:.infinity,alignment:.topLeading).focusSection()
         }.alert("Clear viewing history?",isPresented:$clearHistory){Button("Clear",role:.destructive){library.history=[];library.save()};Button("Cancel",role:.cancel){}}
