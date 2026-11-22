@@ -86,6 +86,11 @@ import TVVLCKit
     private var options: UserDefaults { .standard }
     func start(_ item: Media, force: String? = nil) {
         stop(); active=item; paused=false; retried=false;resumed=false
+        if item.drmType == "widevine" {
+            engine="KSPlayer"
+            status="This channel uses Widevine DRM, which Stream Lounge TV does not support."
+            return
+        }
         let encrypted = ClearKeyVault.shared.enabled(for:item.url) != nil
         let preference=force ?? (encrypted ? "KSPlayer" : (options.string(forKey:"engine") ?? "Auto"))
         let recovered=PlaybackCrashGuard.recovered(item) && !encrypted
@@ -121,7 +126,7 @@ import TVVLCKit
                         let keyHex = try await ClearKeyLicenseService.resolve(profile)
                         guard !Task.isCancelled, let self,
                               self.active?.id == current.id, self.engine == "KSPlayer" else {return}
-                        self.ksPlayer.open(url,clearKeyHex:keyHex)
+                        self.ksPlayer.open(url,clearKeyHex:keyHex,userAgent:current.userAgent,referer:current.referer)
                         self.status="KSPlayer FFmpeg ClearKey playback requested (CENC/AES-CTR)."
                     } catch {
                         guard !Task.isCancelled, let self,
@@ -130,13 +135,15 @@ import TVVLCKit
                     }
                 }
             } else {
-                ksPlayer.open(url)
+                ksPlayer.open(url,userAgent:current.userAgent,referer:current.referer)
                 status="KSPlayer starting • Choose FFmpeg first in Settings if UHD has audio but no picture."
             }
         }
         #endif
         if next == "VLC" {
             let media=VLCMedia(url:url)
+            if let agent=current.userAgent,!agent.isEmpty {media.addOption(":http-user-agent=\(agent)")}
+            if let referer=current.referer,!referer.isEmpty {media.addOption(":http-referrer=\(referer)")}
             media.addOption(":network-caching=\(Int(cache*1000))")
             if options.object(forKey:"hardware") != nil && !options.bool(forKey:"hardware") {media.addOption(":avcodec-hw=none")}
             vlc.media=media;vlc.play()
@@ -182,6 +189,7 @@ import TVVLCKit
             let size=ksPlayer.videoSize
             let decoded=size.width > 0 && size.height > 0
             status="KSPlayer • \(decoded ? "\(Int(size.width)) × \(Int(size.height))" : "Video size unavailable") • \(ksPlayer.isPlaying ? "Playing" : "Opening / buffering")"
+            if let failure=ksPlayer.lastFailure {status="KSPlayer failed: \(failure)"}
             if elapsed>20 && !decoded {status += " • Try Settings → Playback → KS decoding → FFmpeg first, then reload."}
             #endif
         }
@@ -390,12 +398,12 @@ struct PlayerSurface:UIViewRepresentable {
     func makeUIView(context:Context)->UIView {
         let container=UIView(frame:.zero)
         container.backgroundColor = .black
-        container.isUserInteractionEnabled=session.engine == "KSPlayer"
+        container.isUserInteractionEnabled=false
         session.mountVideo(in:container)
         return container
     }
     func updateUIView(_ container:UIView,context:Context) {
-        container.isUserInteractionEnabled=session.engine == "KSPlayer"
+        container.isUserInteractionEnabled=false
         session.mountVideo(in:container)
     }
 }

@@ -16,6 +16,8 @@ struct Source: Codable, Identifiable, Equatable {
 struct Media: Codable, Identifiable, Hashable {
     var id: String; var sourceID: UUID; var name: String; var group: String; var url: String
     var logo: String = ""; var tvg: String = ""; var kind: MediaKind = .live; var remoteID: String = ""
+    // Optional for backwards-compatible decoding of existing channel caches.
+    var userAgent: String? = nil; var referer: String? = nil; var manifestType: String? = nil; var drmType: String? = nil
 }
 struct Programme: Identifiable, Codable {
     var id: String { channel + start.description + title }
@@ -58,31 +60,118 @@ func attributes(_ line: String) -> [String:String] {
         for i in 2...4 where match.range(at:i).location != NSNotFound { out[ns.substring(with:match.range(at:1)).lowercased()] = ns.substring(with:match.range(at:i)); break }
     }; return out
 }
-func parseM3U(_ text: String, source: Source) -> [Media] {
-    var items: [Media] = []; var meta: [String:String] = [:]; var title = ""; var group = ""; var occurrences: [String:Int] = [:]
-    let base = httpURL(source.address)
-    if text.contains("#EXT-X-TARGETDURATION") || text.contains("#EXT-X-STREAM-INF") {
-        if let base = base { return [Media(id: source.id.uuidString+base.absoluteString,sourceID:source.id,name:source.name,group:"Ungrouped",url:base.absoluteString)] }; return []
-    }
-    for raw in text.components(separatedBy: .newlines) {
-        let line = raw.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of:"\u{FEFF}",with:"")
-        if line.hasPrefix("#EXTINF:") {
-            meta = attributes(line); title = ""; group = meta["group-title"] ?? ""
-            var quoted: Character? = nil
-            for idx in line.indices {
-                let c = line[idx]
-                if c == "\"" { quoted = quoted == nil ? c : nil }
-                if c == "," && quoted == nil { title = String(line[line.index(after:idx)...]).trimmingCharacters(in:.whitespaces); break }
-            }
-        } else if line.hasPrefix("#EXTGRP:") { group = String(line.dropFirst(8)).trimmingCharacters(in:.whitespaces) }
-        else if !line.hasPrefix("#") && !line.isEmpty {
-            if let url = httpURL(line) ?? (base.flatMap { URL(string:line,relativeTo:$0)?.absoluteURL }.flatMap { httpURL($0.absoluteString) }) {
-                let key = url.absoluteString; occurrences[key, default:0] += 1
-                items.append(Media(id:source.id.uuidString+"|"+key+"|"+String(occurrences[key]!),sourceID:source.id,name:title.isEmpty ? (meta["tvg-name"] ?? url.lastPathComponent) : title,group:group.isEmpty ? "Ungrouped" : group,url:key,logo:meta["tvg-logo"] ?? "",tvg:meta["tvg-id"] ?? "",kind:mediaKind(url,radio:meta["radio"] == "true")))
-            }; meta = [:]; title = ""; group = ""
-        }
-    }; return items
+// DRM secrets are NEVER included in Media or the serialized media cache.
+// They are transferred to ClearKeyVault (tvOS Keychain) by Library.load.
+struct PlaylistClearKey {
+    let streamURL: String
+    let keyIDHex: String
+    let keyHex: String
 }
+struct ParsedM3U {
+    var media: [Media] = []
+    var keys: [PlaylistClearKey] = []
+    var warnings: [String] = []
+}
+private func playlistB64Bytes(_ input: String) -> Data? {
+    let normalized = input.replacingOccurrences(of:"-",with:"+")
+                          .replacingOccurrences(of:"_",with:"/")
+    return Data(base64Encoded: normalized + String(repeating:"=",count:(4-normalized.count%4)%4))
+}
+private func playlistHex(_ bytes: Data) -> String {
+    bytes.map {String(format:"%02x",$0)}.joined()
+}
+private func playlistKeyBytes(_ raw: String) -> Data? {
+    let value=raw.trimmingCharacters(in:.whitespacesAndNewlines)
+    if value.count == 32, value.unicodeScalars.allSatisfy({(48...57).contains($0.value) || (65...70).contains($0.value) || (97...102).contains($0.value)}) {
+        var bytes=Data()
+        var i=value.startIndex
+        while i<value.endIndex {
+            let end=value.index(i,offsetBy:2)
+            guard let byte=UInt8(value[i..<end],radix:16) else{return nil}
+            bytes.append(byte);i=end
+        }
+        return bytes.count == 16 ? bytes : nil
+    }
+    guard let decoded=playlistB64Bytes(value),decoded.count == 16 else {return nil}
+    return decoded
+}
+private func clearKeyFromPlaylist(_ raw: String) -> (kid:String,key:String)? {
+    // Kodi/inputstream-adaptive M3U: supports JWKS `k` and provider `h` forms.
+    // `h` is NOT a W3C JWK property: accept only when it contains a valid
+    // 16-byte base64url/hex key. No key discovery or DRM-system conversion.
+    guard let payload=raw.data(using:.utf8),
+          let dict=(try? JSONSerialization.jsonObject(with:payload)) as? [String:Any],
+          let entries=dict["keys"] as? [[String:Any]] else{return nil}
+    for entry in entries where entry["kty"] as? String == "oct" {
+        guard let kidText=entry["kid"] as? String,
+              let keyText=(entry["k"] as? String) ?? (entry["h"] as? String),
+              let kid=playlistKeyBytes(kidText),let key=playlistKeyBytes(keyText) else {continue}
+        return (playlistHex(kid),playlistHex(key))
+    }
+    return nil
+}
+func parseM3UDetailed(_ text: String, source: Source) -> ParsedM3U {
+    var result=ParsedM3U()
+    var meta:[String:String]=[:]
+    var title="",group=""
+    var kodi:[String:String]=[:],vlc:[String:String]=[:]
+    var occurrences:[String:Int]=[:]
+    let base=httpURL(source.address)
+    if text.contains("#EXT-X-TARGETDURATION") || text.contains("#EXT-X-STREAM-INF") {
+        if let base=base {result.media=[Media(id:source.id.uuidString+base.absoluteString,sourceID:source.id,name:source.name,group:"Ungrouped",url:base.absoluteString)]}
+        return result
+    }
+    for raw in text.components(separatedBy:.newlines) {
+        let line=raw.trimmingCharacters(in:.whitespacesAndNewlines).replacingOccurrences(of:"\u{FEFF}",with:"")
+        if line.hasPrefix("#EXTINF:") {
+            meta=attributes(line);title="";group=meta["group-title"] ?? "";kodi=[:];vlc=[:]
+            var quoted=false
+            for index in line.indices {
+                if line[index] == "\"" {quoted.toggle()}
+                if line[index] == "," && !quoted {title=String(line[line.index(after:index)...]).trimmingCharacters(in:.whitespaces);break}
+            }
+        } else if line.hasPrefix("#EXTGRP:") {
+            group=String(line.dropFirst(8)).trimmingCharacters(in:.whitespaces)
+        } else if line.hasPrefix("#KODIPROP:") {
+            let body=String(line.dropFirst("#KODIPROP:".count))
+            if let sep=body.firstIndex(of:"=") {
+                kodi[String(body[..<sep]).trimmingCharacters(in:.whitespaces).lowercased()]=String(body[body.index(after:sep)...]).trimmingCharacters(in:.whitespaces)
+            }
+        } else if line.hasPrefix("#EXTVLCOPT:") {
+            let body=String(line.dropFirst("#EXTVLCOPT:".count))
+            if let sep=body.firstIndex(of:"=") {
+                vlc[String(body[..<sep]).trimmingCharacters(in:.whitespaces).lowercased()]=String(body[body.index(after:sep)...]).trimmingCharacters(in:.whitespaces)
+            }
+        } else if !line.hasPrefix("#") && !line.isEmpty {
+            if let url=httpURL(line) ?? (base.flatMap{URL(string:line,relativeTo:$0)?.absoluteURL}.flatMap{httpURL($0.absoluteString)}) {
+                let key=url.absoluteString;occurrences[key,default:0]+=1
+                let license=kodi["inputstream.adaptive.license_type"]?.lowercased() ?? ""
+                var media=Media(id:source.id.uuidString+"|"+key+"|"+String(occurrences[key]!),sourceID:source.id,
+                    name:title.isEmpty ? (meta["tvg-name"] ?? url.lastPathComponent) : title,
+                    group:group.isEmpty ? "Ungrouped" : group,url:key,logo:meta["tvg-logo"] ?? "",
+                    tvg:meta["tvg-id"] ?? "",kind:mediaKind(url,radio:meta["radio"] == "true"))
+                media.userAgent=vlc["http-user-agent"]
+                media.referer=vlc["http-referrer"] ?? vlc["http-referer"]
+                media.manifestType=kodi["inputstream.adaptive.manifest_type"]
+                if license.contains("widevine") {media.drmType="widevine"}
+                else if license.contains("clearkey") {
+                    media.drmType="clearkey"
+                    if let rawKey=kodi["inputstream.adaptive.license_key"],
+                       let pair=clearKeyFromPlaylist(rawKey) {
+                        result.keys.append(PlaylistClearKey(streamURL:key,keyIDHex:pair.kid,keyHex:pair.key))
+                    } else {result.warnings.append("ClearKey entry \(media.name) has no supported 16-byte key/KID pair.")}
+                }
+                result.media.append(media)
+            }
+            meta=[:];title="";group="";kodi=[:];vlc=[:]
+        }
+    }
+    return result
+}
+func parseM3U(_ text: String, source: Source) -> [Media] {
+    parseM3UDetailed(text,source:source).media
+}
+
 struct Xtream {
     let source: Source
     func base() throws -> URL { guard let u = httpURL(source.address), var c = URLComponents(url:u,resolvingAgainstBaseURL:false) else { throw StreamFailure.invalidURL }; c.query=nil; c.fragment=nil; if c.path.hasSuffix("/player_api.php") { c.path = String(c.path.dropLast(15)) }; while c.path.hasSuffix("/") { c.path.removeLast() }; guard let url=c.url else { throw StreamFailure.invalidURL }; return url }

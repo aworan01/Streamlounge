@@ -1,0 +1,29 @@
+Stream Lounge TV v0.3.4 — Settings focus + KSPlayer video-only + M3U DRM metadata
+
+Update the GitHub repository using the contents of this ZIP. Preserve relative paths.
+
+Changed source:
+- ConfirmSelection.swift: native tvOS focus highlights with cyan outline, saved selection checkmark/label, only remote Select commits a change.
+- Settings.swift: remove parent focus bindings that could interfere with buttons.
+- KSPlayerBridge.swift: KSPlayerLayer-only rendering. No KSPlayer UIKit toolbar; only Stream Lounge TV's controls. Exposes playback errors.
+- Playback.swift: KSPlayer/VLC use imported per-channel user-agent/referrer; explicit unsupported Widevine notice.
+- Models.swift: parse #KODIPROP and #EXTVLCOPT, classify DASH/HLS DRM; extract valid embedded ClearKey into temporary key pairs, not media cache.
+- App.swift: store valid embedded keys in Keychain, keep existing manually edited profiles; report malformed pairs.
+- project.yml: bump version 0.3.4.
+- .github/workflows/build-tvos.yml: corrected Xcode 26.2 check without the old grep broken pipe; M3U and ClearKey smoke tests.
+- Tests/run-m3u-protection-smoke.sh and Tests/M3UProtectionSmoke.swift: synthetic valid key tests; optional private sample file test.
+- README.md: limitations and changes.
+
+DO NOT upload a real playlist, content keys, stream credentials, or the user's sample file to public GitHub.
+
+Testing:
+1. Settings -> Appearance -> Theme. Focus should visibly highlight, saved choice has checkmark.
+2. Move focus; press Back; confirm saved theme did NOT change.
+3. Settings -> Playback -> Player engine; repeat for KSPlayer/AVPlayer/VLC.
+4. Open KSPlayer .mpd: only Stream Lounge TV's fullscreen controls should be displayed.
+5. Re-import or refresh an M3U for imported metadata to be read.
+6. The provided sample has two invalid 17-byte h values; expect warnings, not successful ClearKey playback.
+7. For an authorized MPD with a valid 16-byte ClearKey pair, test playback and report status.
+8. tvOS compilation, Siri Remote navigation and actual decryption have NOT been verified locally.
+
+Note: Stream Lounge TV cannot play Widevine or FairPlay through this ClearKey implementation. HLS encryption may be incompatible.

@@ -147,23 +147,40 @@ struct ManualFocusStyle: ButtonStyle {
         var s=s
         do {
             var items:[Media]=[]
+            var playlistKeys:[PlaylistClearKey]=[]
+            var playlistWarnings:[String]=[]
+            func readPlaylist(_ text:String) {
+                let parsed=parseM3UDetailed(text,source:s)
+                items=parsed.media
+                playlistKeys=parsed.keys
+                playlistWarnings=parsed.warnings
+            }
             if s.type == "Xtream" {
                 let api=Xtream(source:s)
                 var failed:[String]=[]
                 for kind in [MediaKind.live,.movie,.series] { do { items += try await api.catalog(kind) } catch { failed.append(kind.rawValue) } }
                 if !failed.isEmpty { message="Unavailable sections: "+failed.joined(separator:", ") }
-            } else if s.type == "Pasted M3U" { s.discoveredEPG=guideURLs(in:s.pasted,base:nil);items=parseM3U(s.pasted,source:s) }
+            } else if s.type == "Pasted M3U" { s.discoveredEPG=guideURLs(in:s.pasted,base:nil);readPlaylist(s.pasted) }
             else if s.type == "Local M3U" {
                 let raw=try Data(contentsOf:URL(fileURLWithPath:s.address))
                 guard let text=String(data:raw,encoding:.utf8) ?? String(data:raw,encoding:.isoLatin1) else {throw StreamFailure.invalidData}
                 s.discoveredEPG=guideURLs(in:text,base:nil)
-                items=parseM3U(text,source:s)
+                readPlaylist(text)
             }
             else {
                 guard let url=httpURL(s.address) else {throw StreamFailure.invalidURL}
-                let data=try await fetch(url); guard let text=String(data:data,encoding:.utf8) ?? String(data:data,encoding:.isoLatin1) else {throw StreamFailure.invalidData}; s.discoveredEPG=guideURLs(in:text,base:url);items=parseM3U(text,source:s)
+                let data=try await fetch(url); guard let text=String(data:data,encoding:.utf8) ?? String(data:data,encoding:.isoLatin1) else {throw StreamFailure.invalidData}; s.discoveredEPG=guideURLs(in:text,base:url);readPlaylist(text)
             }
             guard !items.isEmpty else {throw StreamFailure.empty}
+            // Import only credentials explicitly supplied by the M3U. Never
+            // overwrite a user-edited profile; store secrets in tvOS Keychain.
+            var keyFailures=0
+            for key in playlistKeys where ClearKeyVault.shared.profile(for:key.streamURL) == nil {
+                let profile=ClearKeyProfile(streamURL:key.streamURL,method:"Manual key",keyID:key.keyIDHex,keyHex:key.keyHex)
+                do {try ClearKeyVault.shared.save(profile)} catch {keyFailures += 1}
+            }
+            if keyFailures>0 {message="Imported channels; \(keyFailures) ClearKey configuration(s) could not be stored securely."}
+            else if !playlistWarnings.isEmpty {message=playlistWarnings.prefix(2).joined(separator:" ")}
             media.removeAll{$0.sourceID == s.id}; media += items
             if let index=sources.firstIndex(where:{$0.id == s.id}) {sources[index]=s} else {sources.append(s)}; save(); if defaults.object(forKey:"epgOnImport") as? Bool ?? true {let imported=s;Task{await self.loadGuide(imported)}}; return true
         } catch { message = (error as? StreamFailure)?.localizedDescription ?? "Import failed. Check the server, credentials and network connection."; return false }

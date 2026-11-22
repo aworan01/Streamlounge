@@ -35,7 +35,7 @@ struct SettingsView:View {
                     ConfirmSelection(title: "Player engine", selection: $engine, options: [
                         ConfirmOption("Auto", "Auto"), ConfirmOption("AVPlayer", "AVPlayer"),
                         ConfirmOption("VLC", "VLC"), ConfirmOption("KSPlayer", "KSPlayer")
-                    ]).focused(entryFocus, equals: .settingsOption)
+                     ])
                     .onAppear {
                         #if !canImport(KSPlayerUI)
                         if engine == "KSPlayer" {engine="Auto"}
@@ -55,18 +55,18 @@ struct SettingsView:View {
                     Text("Original resolution; the player does not request downscaling. Preferences apply when a stream is reopened. AVPlayer and VLC may choose variants according to their own policies.").font(.caption).foregroundStyle(.secondary)
                 case "ClearKey":
                     ClearKeySettingsPanel(entryFocus:entryFocus)
-                case "Appearance":ConfirmSelection(title: "Theme", selection: $appearance, options: ["Night Owl", "Black OLED"].map { ConfirmOption($0, $0) }).focused(entryFocus, equals: .settingsOption)
+                case "Appearance":ConfirmSelection(title: "Theme", selection: $appearance, options: ["Night Owl", "Black OLED"].map { ConfirmOption($0, $0) })
                     ConfirmSelection(title: "Text size", selection: $textDensity, options: ["Compact", "Standard", "Large"].map { ConfirmOption($0, $0) })
                     Text("Compact reduces sidebar and live channel text. Long channel names wrap instead of being cut off.").font(.caption).foregroundStyle(.secondary)
                 case "Dashboard":
-                    ConfirmSelection(title: "Start page", selection: $startPage, options: ["Dashboard","Live TV","Movies","Series","Favorites"].map { ConfirmOption($0, $0) }).focused(entryFocus, equals: .settingsOption)
+                    ConfirmSelection(title: "Start page", selection: $startPage, options: ["Dashboard","Live TV","Movies","Series","Favorites"].map { ConfirmOption($0, $0) })
                     Toggle("Remember last channel",isOn:$rememberLastChannel)
                     Toggle("Refresh playlists when app launches",isOn:$autoRefreshPlaylists)
                     Text("Automatic refresh uses the current playlist URL and retains existing favorite IDs when the source entries remain identical.").font(.caption).foregroundStyle(.secondary)
                 case "EPG / TV Guide":
                     EPGSettingsPanel(library:library,entryFocus:entryFocus)
                 case "Data management":Button("Clear viewing history"){clearHistory=true}.focused(entryFocus,equals:.settingsOption);Button("Clear watch progress"){library.forgetProgress()};Text("Playlists and favorites are retained. Watch progress and metadata are stored locally.").font(.caption).foregroundStyle(.secondary)
-                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.3.3");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. KSPlayer 5.6.2: GPL-3.0. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
+                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.3.4");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. KSPlayer 5.6.2: GPL-3.0. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth:.infinity,alignment:.leading).padding(16) }.frame(maxHeight:.infinity,alignment:.topLeading).focusSection()
         }.alert("Clear viewing history?",isPresented:$clearHistory){Button("Clear",role:.destructive){library.history=[];library.save()};Button("Cancel",role:.cancel){}}

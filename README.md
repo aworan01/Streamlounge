@@ -1,3 +1,14 @@
+## v0.3.4 — Playlist ClearKey / KS rendering / Focus fix
+
+- M3U parser now retains `#KODIPROP` manifest/DRM metadata and `#EXTVLCOPT` user-agent/referrer per channel.
+- Authorized embedded ClearKey `kid` plus `k` (standard JWK) or `h` (nonstandard playlist variant) are parsed and copied into tvOS Keychain. Key bytes are not serialized to media-cache JSON.
+- Existing user-edited Keychain entries are preserved. Re-import or refresh an existing M3U for embedded keys to be recognized.
+- `com.widevine.alpha` is explicitly reported as unsupported; HLS ClearKey is NOT guaranteed without knowing its encryption scheme.
+- KSPlayer uses `KSPlayerLayer.makeUIView()` alone, without its built-in playback controls. Stream Lounge's fullscreen toolbar is the only controller.
+- Theme and engine options show committed selection and tvOS native focus feedback. Focus traversal does not commit settings.
+- ClearKey decoding remains experimental for DASH: FFmpeg version/demuxer and stream encryption scheme determine whether `cenc_decryption_key` works. No device test has been performed.
+- Playlist files imported to cache are still local files and may contain provider credentials. Do not post real playlists to public GitHub repositories.
+
 # Stream Lounge TV 0.3.3 — Confirm-to-change settings
 
 Stream Lounge TV is an independent Apple TV IPTV application inspired by selected features of IPTVnator. It is **not** an official IPTVnator release and does not provide subscriptions, channels, playlists, DRM keys, or access to content.
