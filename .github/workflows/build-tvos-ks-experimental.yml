@@ -1,0 +1,56 @@
+name: Build KSPlayer tvOS IPA (experimental)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.2 and check environment
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+          xcodebuild -version
+          xcrun --sdk appletvos --show-sdk-version
+          command -v xcodegen || brew install xcodegen
+      - name: Generate KSPlayer experiment target
+        run: xcodegen generate --spec project.ksplayer.yml
+      - name: Resolve Swift packages
+        run: xcodebuild -resolvePackageDependencies -project StreamLoungeTV.xcodeproj -scheme StreamLoungeTV
+      - name: Install VLC for fallback comparison
+        run: |
+          command -v pod || brew install cocoapods
+          pod install
+      - name: Compile unsigned app
+        run: |
+          set -o pipefail
+          xcodebuild -workspace StreamLoungeTV.xcworkspace -scheme StreamLoungeTV \
+            -configuration Release -sdk appletvos -destination 'generic/platform=tvOS' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            ARCHS=arm64 build 2>&1 | tee build-ks.log
+      - name: Package experiment IPA
+        run: |
+          set -euo pipefail
+          APP=build/Build/Products/Release-appletvos/StreamLoungeTV.app
+          test -f "$APP/StreamLoungeTV"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$APP/Info.plist" | grep -x AppleTVOS
+          xcrun lipo "$APP/StreamLoungeTV" -verify_arch arm64
+          mkdir -p dist/Payload
+          cp -R "$APP" dist/Payload/
+          (cd dist && zip -qry StreamLoungeTV-KS-experimental.ipa Payload)
+          unzip -t dist/StreamLoungeTV-KS-experimental.ipa
+      - name: Upload experimental IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: StreamLoungeTV-KS-experimental
+          path: dist/StreamLoungeTV-KS-experimental.ipa
+          if-no-files-found: error
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-ks
+          path: build-ks.log
+          if-no-files-found: ignore
