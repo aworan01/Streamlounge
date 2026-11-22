@@ -6,8 +6,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '0.2.1'
-    CURRENT_PROJECT_VERSION: '3'
+    MARKETING_VERSION: '0.2.4'
+    CURRENT_PROJECT_VERSION: '6'
 targets:
   StreamLoungeTV:
     type: application
@@ -17,6 +17,8 @@ targets:
       - Models.swift
       - Playback.swift
       - Settings.swift
+      - EPG.swift
+      - GuideUI.swift
     info:
       path: Info.plist
       properties:

@@ -16,6 +16,9 @@ import TVVLCKit
     private var started = Date()
     @Published private(set) var paused = false
     @Published private(set) var qualityCap: Double = 0
+    @Published private(set) var streamBitrate: Double? = nil
+    @Published private(set) var inputThroughput: Double? = nil
+    private var vlcSamples: [(time: Date, bytes: Int64)] = []
     private var retried = false
     private var automatic = true
     weak var layer: AVPlayerLayer?
@@ -30,6 +33,7 @@ import TVVLCKit
     private func launch(_ next: String) {
         guard let current=active,let url=httpURL(current.url) else {status="Invalid stream URL";return}
         monitor?.cancel();native.pause();native.replaceCurrentItem(with:nil);vlc.stop()
+        streamBitrate=nil;inputThroughput=nil;vlcSamples.removeAll()
         engine=next;started=Date();status="Opening with \(next)…";paused=false
         let cache=options.object(forKey:"bufferSeconds") as? Double ?? 5
         if next == "VLC" {
@@ -60,14 +64,47 @@ import TVVLCKit
                 retried=true;launch("VLC");return
             }
             let dimension=size.width>0 ? "\(Int(size.width)) × \(Int(size.height))" : "Video size unavailable"
-            let rate=item.accessLog()?.events.last?.observedBitrate ?? 0
+            let event=item.accessLog()?.events.last
+            let indicated=event?.indicatedBitrate ?? 0
+            let rate=event?.observedBitrate ?? 0
+            streamBitrate=indicated.isFinite && indicated>0 ? indicated : nil
+            inputThroughput=rate.isFinite && rate>0 ? rate : nil
             status=failed ? "AVPlayer error • Try VLC" : "AVPlayer • \(dimension) • \(ready ? "Video ready" : "Awaiting picture")\(rate>0 ? " • \(String(format:"%.1f",rate/1_000_000)) Mbps" : "")"
         } else {
             let size=vlc.videoSize
+            sampleVLCBitrate()
             status="VLC • \(size.width>0 ? "\(Int(size.width)) × \(Int(size.height))" : "Awaiting picture") • \(vlc.isPlaying ? "Playing" : "Opening / buffering")"
             // Do not repeatedly reconnect: a provider may allow only one concurrent stream.
             if elapsed>25 && size.width==0 { status += " • No video detected; try disabling hardware decoding in Settings." }
         }
+    }
+    // VLC's demux byte counter is measured in bytes. A rolling delta gives
+    // an estimate of combined media bitrate, not a video-only encoder rate.
+    private func sampleVLCBitrate() {
+        guard let media=vlc.media else {streamBitrate=nil;return}
+        let bytes=Int64(media.numberOfReadBytesOnDemux)
+        let now=Date()
+        if let last=vlcSamples.last, bytes<last.bytes {vlcSamples.removeAll();streamBitrate=nil}
+        vlcSamples.append((now,bytes))
+        vlcSamples.removeAll{now.timeIntervalSince($0.time)>7}
+        if let first=vlcSamples.first {
+            let seconds=now.timeIntervalSince(first.time)
+            if seconds>=3 {
+                let rate=Double(bytes-first.bytes)*8/seconds
+                streamBitrate=rate.isFinite && rate>0 ? rate : nil
+            }
+        }
+        inputThroughput=nil
+    }
+    private func formatRate(_ rate:Double?) -> String {
+        guard let rate=rate,rate.isFinite,rate>0 else{return "Unavailable / measuring"}
+        return String(format:"%.2f Mbps",rate/1_000_000)
+    }
+    var bitrateDescription:String {formatRate(streamBitrate)}
+    var throughputDescription:String {formatRate(inputThroughput)}
+    var resolutionDescription:String {
+        let size=engine == "VLC" ? vlc.videoSize : (native.currentItem?.presentationSize ?? .zero)
+        return size.width>0 && size.height>0 ? "\(Int(size.width)) × \(Int(size.height))" : "Unavailable"
     }
     struct Track: Identifiable { let id: Int32; let name: String; let selected: Bool }
     func tracks(_ kind:String) -> [Track] {
@@ -99,7 +136,7 @@ import TVVLCKit
     func reload(){guard active != nil else{return};launch(engine)}
     func switchEngine() {guard active != nil else{return};retried=true;launch(engine == "VLC" ? "AVPlayer" : "VLC")}
     func togglePause() {guard active != nil else{return};paused.toggle();if engine == "VLC" {if paused{vlc.pause()}else{vlc.play()}}else{if paused{native.pause()}else{native.play()}};if paused{status="Paused • \(engine)"}}
-    func stop(){monitor?.cancel();monitor=nil;native.pause();native.replaceCurrentItem(with:nil);vlc.stop();active=nil;status="Stopped"}
+    func stop(){monitor?.cancel();monitor=nil;native.pause();native.replaceCurrentItem(with:nil);vlc.stop();active=nil;streamBitrate=nil;inputThroughput=nil;vlcSamples.removeAll();status="Stopped"}
 }
 final class VideoHost:UIView {
     override var canBecomeFocused:Bool { false }
@@ -115,6 +152,13 @@ struct PlayerSurface:UIViewRepresentable {
     func makeUIView(context:Context)->VideoHost{let view=VideoHost(frame:.zero);view.vlcView.isHidden=session.engine != "VLC";view.playerLayer.player=session.native;session.layer=view.playerLayer;session.vlc.drawable=view.vlcView;return view}
     func updateUIView(_ view:VideoHost,context:Context){view.vlcView.isHidden=session.engine != "VLC";view.playerLayer.player=session.engine == "AVPlayer" ? session.native : nil;session.layer=view.playerLayer;if session.engine == "VLC", (session.vlc.drawable as? UIView) !== view.vlcView {session.vlc.drawable=view.vlcView}}
 }
+// Use a custom style rather than the tvOS system focus highlight. A tiny
+// wake target receives remote input without covering the video surface.
+private struct WakeButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+    }
+}
 // Fullscreen keeps playback and controls separate, with explicit remote focus.
 struct FullPlayer:View {
     let item:Media
@@ -125,6 +169,7 @@ struct FullPlayer:View {
     let onClose:()->Void
     @State private var visible=true
     @State private var panel:String?=nil
+    @State private var returnFocus="pause"
     @FocusState private var focus:String?
     private var sourceName:String {library.sources.first{$0.id==item.sourceID}?.name ?? "Unknown source"}
     private var alternatives:[Media] {
@@ -138,7 +183,7 @@ struct FullPlayer:View {
             if visible {
                 VStack(alignment:.leading,spacing:10) {
                     HStack(alignment:.top){VStack(alignment:.leading,spacing:5){Text(item.name).font(.system(size:38,weight:.semibold)).lineLimit(nil).fixedSize(horizontal:false,vertical:true);Text(sourceName+"  •  "+item.group).font(.system(size:23)).foregroundStyle(.secondary)};Spacer();if item.kind == .live {Text("LIVE").font(.system(size:20,weight:.bold)).padding(10).background(Color.red.opacity(0.8),in:RoundedRectangle(cornerRadius:6))}}
-                    if let p=library.guide.first(where:{library.guideSource==item.sourceID && $0.channel==item.tvg && $0.start<=Date() && $0.end>Date()}) {Text(p.title).font(.system(size:23)).lineLimit(nil);ProgressView(value:min(1,max(0,Date().timeIntervalSince(p.start)/max(1,p.end.timeIntervalSince(p.start))))) }
+                    if let p=library.currentProgramme(item) {Text(p.title).font(.system(size:23)).lineLimit(nil);if let next=library.nextProgramme(item){Text("Next: "+next.title).font(.system(size:19)).foregroundStyle(.secondary).lineLimit(1)};ProgressView(value:min(1,max(0,Date().timeIntervalSince(p.start)/max(1,p.end.timeIntervalSince(p.start))))) }
                     if item.kind != .live && session.engine == "AVPlayer" { HStack{ control("back15","gobackward.15","−15s"){seek(-15)};control("forward15","goforward.15","+15s"){seek(15)};Spacer()} }
                     HStack(spacing:8) {
                         control("prev","backward.end.fill","Previous",enabled:index.map{$0>0} ?? false){step(-1)}
@@ -160,7 +205,12 @@ struct FullPlayer:View {
                 .background(LinearGradient(colors:[.clear,.black.opacity(0.9),.black],startPoint:.top,endPoint:.bottom))
                 .opacity(panel == nil ? 1 : 0).disabled(panel != nil)
             } else {
-                Button{show()}label:{Color.black.opacity(0.001).frame(maxWidth:.infinity,maxHeight:.infinity).contentShape(Rectangle())}.buttonStyle(.plain).focused($focus,equals:"wake").accessibilityLabel("Show playback controls").onMoveCommand{_ in show()}
+                Button{show()}label:{Color.clear.frame(width:44,height:44).contentShape(Rectangle())}
+                    .buttonStyle(WakeButtonStyle())
+                    .focused($focus,equals:"wake")
+                    .accessibilityLabel("Show playback controls")
+                    .onMoveCommand{_ in show()}
+                    .padding(12)
             }
             if let pane=panel { panelView(pane) }
         }.frame(maxWidth:.infinity,maxHeight:.infinity).background(.black)
@@ -171,16 +221,39 @@ struct FullPlayer:View {
     private func assignFocus(_ key:String){Task{@MainActor in await Task.yield();focus=key}}
     private func show(){visible=true;assignFocus("pause")}
     private func hide(){panel=nil;visible=false;assignFocus("wake")}
-    private func open(_ name:String){panel=name;assignFocus("panelClose")}
-    private func closePanel(){panel=nil;assignFocus("pause")}
+    private func open(_ name:String){returnFocus=focus ?? "pause";panel=name;assignFocus("panelClose")}
+    private func closePanel(){panel=nil;assignFocus(returnFocus)}
     private func step(_ delta:Int){if let i=index,channels.indices.contains(i+delta){onSelect(channels[i+delta])}}
     private func seek(_ delta:Double){let t=session.native.currentTime().seconds;guard t.isFinite else{return};session.native.seek(to:CMTime(seconds:max(0,t+delta),preferredTimescale:600))}
     private func control(_ key:String,_ icon:String,_ title:String,enabled:Bool=true,action:@escaping ()->Void)->some View {
-        Button(action:action){VStack(spacing:6){Image(systemName:icon).font(.system(size:30,weight:.medium));Text(title).font(.system(size:18,weight:.medium)).lineLimit(1).minimumScaleFactor(0.7)}.frame(maxWidth:.infinity).frame(height:88).foregroundStyle(focus==key ? Color.black : Color.white).background(RoundedRectangle(cornerRadius:12).fill(focus==key ? Color.white : Color.white.opacity(0.12)))}.buttonStyle(.plain).focused($focus,equals:key).disabled(!enabled).opacity(enabled ? 1 : 0.3)
+        Button(action:action) {
+            VStack(spacing:5) {
+                Image(systemName:icon)
+                    .font(.system(size:27,weight:.medium))
+                    .foregroundStyle(focus == key ? Color.cyan : Color.white)
+                    .frame(width:56,height:48)
+                    .background(RoundedRectangle(cornerRadius:9).fill(focus == key ? Color.cyan.opacity(0.18) : Color.black.opacity(0.32)))
+                    .overlay(RoundedRectangle(cornerRadius:9).strokeBorder(focus == key ? Color.cyan : Color.white.opacity(0.12),lineWidth:2))
+                Text(title).font(.system(size:17,weight:.medium)).lineLimit(1).minimumScaleFactor(0.7)
+                    .foregroundStyle(focus == key ? Color.cyan : Color.white.opacity(0.9))
+            }
+            .frame(maxWidth:.infinity).frame(height:78).contentShape(Rectangle())
+        }.buttonStyle(ManualFocusStyle()).focused($focus,equals:key).disabled(!enabled).opacity(enabled ? 1 : 0.3)
     }
     private func option(_ key:String,_ title:String,chosen:Bool=false,action:@escaping ()->Void)->some View {
-        Button(action:action){HStack{Text(title).font(.system(size:25)).lineLimit(nil).fixedSize(horizontal:false,vertical:true);Spacer();if chosen {Image(systemName:"checkmark.circle.fill")}}.padding(12).frame(maxWidth:.infinity,alignment:.leading).foregroundStyle(focus==key ? Color.black : Color.white).background(RoundedRectangle(cornerRadius:10).fill(focus==key ? Color.white : Color.white.opacity(0.08)))}.buttonStyle(.plain).focused($focus,equals:key)
+        Button(action:action) {
+            HStack(spacing:10) {
+                Capsule().fill(focus == key ? Color.cyan : Color.clear).frame(width:3,height:24)
+                Text(title).font(.system(size:23)).lineLimit(nil).fixedSize(horizontal:false,vertical:true)
+                Spacer(minLength:4)
+                if chosen { Image(systemName:"checkmark.circle.fill").foregroundStyle(Color.cyan) }
+            }.padding(.horizontal,10).padding(.vertical,8).frame(maxWidth:.infinity,alignment:.leading)
+                .foregroundStyle(focus == key ? Color.cyan : Color.white)
+                .background(RoundedRectangle(cornerRadius:8).fill(focus == key ? Color.cyan.opacity(0.12) : Color.white.opacity(0.045)))
+                .overlay(RoundedRectangle(cornerRadius:8).strokeBorder(focus == key ? Color.cyan.opacity(0.85) : Color.clear,lineWidth:1.5))
+        }.buttonStyle(ManualFocusStyle()).focused($focus,equals:key)
     }
+
     private func panelView(_ name:String)->some View {
         HStack {Spacer();VStack(alignment:.leading,spacing:14){
             Text(name).font(.system(size:36,weight:.bold))
@@ -209,7 +282,11 @@ struct FullPlayer:View {
                     ForEach(["Auto","AVPlayer","VLC"],id:\.self){engine in option("engine-"+engine,engine,chosen:session.engine==engine){session.chooseEngine(engine)}}
                     option("reload","Reload stream"){session.reload()}
                 default:
-                    Text(item.name).font(.system(size:27,weight:.semibold));Text("Playlist: "+sourceName);Text("Category: "+item.group);Text("Engine: "+session.engine);Text(session.status);if let host=httpURL(item.url)?.host {Text("Server: "+host)}
+                    Text(item.name).font(.system(size:27,weight:.semibold));Text("Playlist: "+sourceName);Text("Category: "+item.group);Text("Engine: "+session.engine)
+                    Text("Resolution: "+session.resolutionDescription)
+                    Text((session.engine == "VLC" ? "Bitrate (estimated): " : "Stream bitrate: ")+session.bitrateDescription)
+                    if session.engine == "AVPlayer" {Text("Download throughput: "+session.throughputDescription)}
+                    Text(session.status);if let host=httpURL(item.url)?.host {Text("Server: "+host)}
                 }
             }.frame(maxWidth:.infinity,alignment:.leading)}
         }.padding(32).frame(width:670).frame(maxHeight:.infinity,alignment:.topLeading).background(Color(red:0.08,green:0.10,blue:0.15)).focusSection()}.frame(maxWidth:.infinity,maxHeight:.infinity)

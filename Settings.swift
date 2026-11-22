@@ -33,13 +33,56 @@ struct SettingsView:View {
                     Picker("Text size",selection:$textDensity){ForEach(["Compact","Standard","Large"],id:\.self){Text($0).tag($0)}}
                     Text("Compact reduces sidebar and live channel text. Long channel names wrap instead of being cut off.").font(.caption).foregroundStyle(.secondary)
                 case "EPG / TV Guide":
-                    Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption)
-                    Text("Set XMLTV URLs per playlist in Playlists → Edit. Import uncompressed XMLTV here.").font(.caption).foregroundStyle(.secondary)
-                    ForEach(library.sources){source in Button("Refresh \(source.name)"){Task{await library.loadGuide(source)}}.disabled(library.busy)}
+                    EPGSettingsPanel(library:library,entryFocus:entryFocus)
                 case "Data management":Button("Clear viewing history"){clearHistory=true}.focused(entryFocus,equals:.settingsOption);Text("Playlists and favorites are retained. Catalogs are stored in tvOS cache and may need refreshing after system cleanup.").font(.caption).foregroundStyle(.secondary)
-                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.2.1");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
+                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.2.4");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth:.infinity,alignment:.leading).padding(16) }.frame(maxHeight:.infinity,alignment:.topLeading).focusSection()
         }.alert("Clear viewing history?",isPresented:$clearHistory){Button("Clear",role:.destructive){library.history=[];library.save()};Button("Cancel",role:.cancel){}}
+    }
+}
+
+struct EPGSettingsPanel:View {
+    @ObservedObject var library:Library
+    var entryFocus:FocusState<HomeFocus?>.Binding
+    @AppStorage("epgExternal") private var external=true
+    @AppStorage("epgProvider") private var provider=true
+    @AppStorage("epgCustom") private var custom=true
+    @AppStorage("epgOrder") private var order="Provider first"
+    @AppStorage("epgCountries") private var countries=""
+    @AppStorage("epgInterval") private var interval=12
+    @AppStorage("epgOnStart") private var onStart=true
+    @AppStorage("epgOnImport") private var onImport=true
+    @AppStorage("epgDays") private var days=7
+    @AppStorage("epgPast") private var past=1
+    @AppStorage("epgOffset") private var offset=0
+    @AppStorage("epgBorrow") private var borrow=true
+    @State private var clear=false
+    var body:some View {
+        VStack(alignment:.leading,spacing:18){
+            Button("Update all guides now"){Task{await library.refreshAllGuides(force:true)}}.focused(entryFocus,equals:.settingsOption).disabled(library.epgBusy)
+            if library.epgBusy{ProgressView()};Text(library.epgStatus).font(.caption).foregroundStyle(.secondary)
+            Toggle("Provider EPG",isOn:$provider);Toggle("Custom XMLTV",isOn:$custom);Toggle("Automatic EPGShare01",isOn:$external)
+            TextField("Country codes (blank = automatic)",text:$countries)
+            Text("Examples: UK, US, NG, ZA. Playlist-specific country settings override this list. Coverage varies by source.").font(.caption).foregroundStyle(.secondary)
+            Picker("Source priority",selection:$order){ForEach(["Provider first","Custom first","External first"],id:\.self){Text($0).tag($0)}}
+            Toggle("Borrow guide from equivalent channels",isOn:$borrow)
+            Picker("Refresh every",selection:$interval){ForEach([3,6,12,24,48],id:\.self){Text("\($0) hours").tag($0)}}
+            Toggle("Refresh on app launch",isOn:$onStart);Toggle("Refresh after playlist import",isOn:$onImport)
+            Picker("Days ahead",selection:$days){ForEach(1...14,id:\.self){Text("\($0) days").tag($0)}}
+            Picker("Past days",selection:$past){ForEach(0...7,id:\.self){Text("\($0) days").tag($0)}}
+            Picker("Global time correction",selection:$offset){ForEach(Array(stride(from:-720,through:720,by:15)),id:\.self){Text("\($0) min").tag($0)}}
+            Text("Refresh runs while the app is active; tvOS may suspend it in the background. Time correction and source changes apply at the next update.").font(.caption).foregroundStyle(.secondary)
+            Text("EPG sources and statistics").font(.headline)
+            ForEach(library.sources){source in
+                VStack(alignment:.leading,spacing:6){
+                    HStack{Text(source.name).font(.headline);Spacer();Button("Refresh"){Task{await library.loadGuide(source)}}.disabled(library.epgBusy)}
+                    Text("Provider: \(providerGuideURLs(source).count) · Custom: \(source.epg.components(separatedBy:.whitespacesAndNewlines).compactMap(httpURL).count) · Countries: \(guideCountries(source,library.media.filter{$0.sourceID==source.id && $0.kind == .live},GuideOptions.read()).joined(separator:", "))").font(.caption2).foregroundStyle(.secondary)
+                    if let snapshot=library.guides[source.id]{Text("Matched \(snapshot.matched) / \(snapshot.total) · \(snapshot.feeds) feeds · \(snapshot.failures) failures").font(.caption);Text("Updated "+snapshot.updated.formatted()).font(.caption2).foregroundStyle(.secondary);ForEach(Array(snapshot.status.enumerated()),id:\.offset){entry in Text(entry.element).font(.caption2).foregroundStyle(.secondary)}}else{Text("No cached EPG yet").font(.caption).foregroundStyle(.secondary)}
+                }.padding(10).background(Color.white.opacity(0.04),in:RoundedRectangle(cornerRadius:8))
+            }
+            Button("Clear guide cache"){clear=true}.disabled(library.epgBusy)
+            Text("Custom sources and country overrides: Playlists → Edit. Manual XMLTV ID: TV Guide → select a channel.").font(.caption).foregroundStyle(.secondary)
+        }.alert("Clear downloaded programme guides?",isPresented:$clear){Button("Clear",role:.destructive){library.clearGuides()};Button("Cancel",role:.cancel){}}
     }
 }

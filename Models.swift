@@ -10,14 +10,16 @@ enum MediaKind: String, Codable, CaseIterable { case live = "Live TV", movie = "
 struct Source: Codable, Identifiable, Equatable {
     var id = UUID(); var name: String; var address: String; var type: String
     var user = ""; var password = ""; var epg = ""; var pasted = ""
+    var discoveredEPG: [String]? = nil
+    var epgCountries: String? = nil
 }
 struct Media: Codable, Identifiable, Hashable {
     var id: String; var sourceID: UUID; var name: String; var group: String; var url: String
     var logo: String = ""; var tvg: String = ""; var kind: MediaKind = .live; var remoteID: String = ""
 }
-struct Programme: Identifiable {
+struct Programme: Identifiable, Codable {
     var id: String { channel + start.description + title }
-    var channel: String; var start: Date; var end: Date; var title: String
+    var channel: String; var start: Date; var end: Date; var title: String; var detail: String = ""
 }
 enum StreamFailure: LocalizedError {
     case invalidURL, empty, badResponse, invalidData
@@ -113,17 +115,3 @@ struct Xtream {
     }
 }
 func str(_ value: Any?) -> String { if let s=value as? String { return s }; if let n=value as? NSNumber { return n.stringValue }; return "" }
-final class XMLGuide: NSObject, XMLParserDelegate {
-    var results:[Programme]=[]; private var channel=""; private var start:Date?; private var end:Date?; private var title=""; private var inTitle=false; private var inProgramme=false
-    private let date:DateFormatter = { let f=DateFormatter(); f.locale=Locale(identifier:"en_US_POSIX"); f.dateFormat="yyyyMMddHHmmss Z"; f.timeZone=TimeZone(secondsFromGMT:0); return f }()
-    func parse(_ data:Data) throws -> [Programme] { let p=XMLParser(data:data); p.delegate=self; p.shouldResolveExternalEntities=false; guard p.parse() else { throw StreamFailure.invalidData }; return results }
-    func parser(_ parser:XMLParser,didStartElement name:String,namespaceURI:String?,qualifiedName:String?,attributes a:[String:String]) {
-        if name == "programme" { channel=a["channel"] ?? ""; start=parseDate(a["start"]); end=parseDate(a["stop"]); title=""; inProgramme=true }
-        if name == "title" && inProgramme && title.isEmpty { inTitle=true }
-    }
-    func parseDate(_ s:String?) -> Date? { guard let s=s else { return nil }; return date.date(from:s.count == 14 ? s+" +0000" : s) }
-    func parser(_ parser:XMLParser,foundCharacters string:String) { if inTitle { title += string } }
-    func parser(_ parser:XMLParser,didEndElement name:String,namespaceURI:String?,qualifiedName:String?) {
-        if name == "title" { inTitle=false }; if name == "programme" { if let start=start,let end=end,end>Date().addingTimeInterval(-86400),start<Date().addingTimeInterval(7*86400) { results.append(Programme(channel:channel,start:start,end:end,title:title)) }; inProgramme=false }
-    }
-}
