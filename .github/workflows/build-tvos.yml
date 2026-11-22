@@ -36,7 +36,7 @@ jobs:
           APP=build/Build/Products/Release-appletvos/StreamLoungeTV.app
           test -f "$APP/StreamLoungeTV"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$APP/Info.plist" | grep -x AppleTVOS
-          xcrun lipo -verify_arch arm64 "$APP/StreamLoungeTV"
+          lipo "build/Build/Products/Release-appletvos/StreamLoungeTV.app/StreamLoungeTV" -verify_arch arm64
           mkdir -p dist/Payload
           cp -R "$APP" dist/Payload/
           cd dist
