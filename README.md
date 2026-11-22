@@ -1,34 +1,37 @@
-# Stream Lounge TV v0.2.5 — remote navigation, TV Guide playback, channel browser, quality labels
+# Stream Lounge TV v0.2.6 — full playlist names, persistent video output, fullscreen HDR diagnostics
 
-Native SwiftUI tvOS IPTV player. This release updates v0.2.4 without changing the bundle identifier (`com.streamlounge.tv`), player engines (AVPlayer / TVVLCKit), IPTV sources or EPG cache. No IPTV streams or programme data are bundled. Use only sources you are authorized to access.
+Native SwiftUI tvOS IPTV player. This release updates v0.2.5 without changing the bundle identifier (`com.streamlounge.tv`), player engines (AVPlayer / TVVLCKit), IPTV sources or EPG cache. No IPTV streams or programme data are bundled. Use only sources you are authorized to access.
 
 ## Updating in your existing GitHub repository (web only)
 
-Replace these root files together: `App.swift`, `Models.swift`, `Playback.swift`, `Settings.swift`, `GuideUI.swift`, `project.yml`, and `README.md`. Do **not** delete the existing `EPG.swift`, `Podfile`, `LICENSE.md` or `.github/workflows/build-tvos.yml`. The update ZIP contains only changed files; the full source ZIP contains all files including the unchanged files and the workflow.
+Replace these root files together: `App.swift`, `Playback.swift`, `project.yml`, and `README.md`. Do **not** delete the existing `EPG.swift`, `Podfile`, `LICENSE.md` or `.github/workflows/build-tvos.yml`. The update ZIP contains only changed files; the full source ZIP contains all files including the unchanged files and the workflow.
 
 Commit and run **Actions → Build tvOS IPA → Run workflow**. On success, download the `StreamLoungeTV-unsigned` artifact, sign it using your normal tvOS signing method, then install on Apple TV. This is an unsigned IPA build. Keep a copy of the previous installed/tested version.
 
 ## What changed
 
-1. **Sidebar skipping:** Removed competing manual Up/Down focus changes in the main sidebar and Settings category column. tvOS's native focus engine handles vertical movement; Right enters the highlighted section. Use centre/Select to open pages. This requires actual Siri Remote verification.
-2. **Play from TV Guide:** Selecting a channel name (play icon) in the EPG timeline starts its current live stream in the fullscreen player. Selecting the adjacent schedule opens programme details and manual guide matching; that screen also has **Watch Live**, which opens inline playback in Live TV. Historical/future programme cells do **not** imply catch-up playback.
-3. **Now Playing → Channels:** The channel browser starts with the current playlist and group, scrolls to and focuses the currently playing channel, and offers playlist and group menus on the left. Changing the group scrolls the resulting channel list to its first item. The full list is no longer restricted by the Live TV page's search or category filters. Previous/Next stays within the currently playing playlist.
-4. **Live TV playlist header:** A dedicated one-line **Playlist** heading, a compact selector and a separate full source name (wrappable) prevent a long playlist name from being silently truncated.
-5. **Now Playing → Quality:** The icon displays **SD, HD, FHD or 4K** based on the real video raster size reported by the active decoder. Before dimensions are reported, it shows `—` instead of falsely displaying 4K. The Quality and Info panels show the classification and actual resolution, and the existing player-dependent bandwidth options remain.
+1. **Full playlist names in Live TV:** The source/filter column expands from 290 to 410 points. Rather than trusting a compact tvOS `Picker` to show an arbitrary name, the page now uses a wide, multiline button displaying the selected playlist name in full. It opens a spacious, scrolling selection sheet where each playlist name wraps without truncation.
+2. **Inline-to-fullscreen video:** The previous implementation recreated `VideoHost` (and rebound TVVLCKit's `drawable`) every time a separate `PlayerSurface` appeared. The `PlaybackSession` now owns one persistent `VideoHost` with a single AVPlayerLayer and VLC drawable. Switching surfaces only moves the existing view to its new container. This targets the "video inline / audio-only fullscreen" failure mode.
+3. **Manual recovery / diagnostics:** In fullscreen **Player** controls choose **Reconnect video output** to rebind the current engine's video output without importing playlists again. In **Info** the video surface attachment and dimensions appear alongside decoder resolution, engine and measured bitrate.
+4. **Current playback and navigation retained:** All v0.2.5 TV Guide, Now Playing channel and group navigation, SD/HD/FHD/4K labels, EPGShare support, subtitles, favorites and the existing user data keys remain in place.
 
-## On-device test checklist
+## GitHub installation (web only)
 
-- Open Dashboard, move Down once per menu item to Movies. Confirm no menu items skipped. Repeat in reverse and in Settings.
-- Open TV Guide, select the **channel name** to play live. Exit the player; select the **programme cell** to open details and then select **Watch Live**.
-- Play a channel near the end of a long playlist, enter fullscreen → **Channels**. Verify it scrolls to the active channel and the selected channel is highlighted. Change groups and playlists from the left side and play a channel from a different group.
-- In Live TV select a playlist with a very long name; verify its full name remains visible below the selector.
-- Play known 576p, 720p, 1080p and 2160p streams; the Quality icon should show SD, HD, FHD and 4K respectively. A stream with no detected video should show `—`. This indicator is informational, not a quality selector or a guarantee of picture availability.
+For an existing working v0.2.5 repository, upload the four changed files to the project root and commit. Keep `EPG.swift`, `GuideUI.swift`, `Models.swift`, `Settings.swift`, `Podfile`, `LICENSE.md` and `.github/workflows/build-tvos.yml` unchanged. Open **Actions → Build tvOS IPA → Run workflow**. Download `StreamLoungeTV-unsigned` from the successful run; sign and sideload with your established tvOS tool. Do not delete the installed previous version until the replacement works on your device.
 
-## Validation and limitations
+## Suggested TV tests
 
-- Passed: Swift syntax parsing of all application source files under Linux Swift; standalone type checking of the Foundation/EPG core; previous EPG import/matching smoke tests; new `Tests/QualitySmoke.swift` for quality-tier mapping; ZIP archive integrity. Neither TVVLCKit nor Apple's tvOS SDK is installed in the container.
-- **Not yet verified:** Entire project compiling in Xcode, focus movement on Apple TV, fullscreen channel-list auto-scroll, or performance with a large programme catalogue. Report any compile errors from the GitHub Actions `build-log` artifact. Do not treat this release as device-tested until you install it.
-- This is live playback from EPG, **not catch-up/time-shifted playback**. EPG match coverage still depends on external data and the provider.
+1. In **Live TV**, select a playlist with a long name. It should appear over one or more readable lines, not as an ellipsis. Press Select to open the new full-width playlist chooser; check every long entry and remote focus.
+2. Start a known working HD channel inline, enter fullscreen, and return inline several times. It should continue displaying video rather than going black.
+3. Repeat step 2 on a 4K/HDR channel that previously played inline but went black fullscreen. In **Now Playing → Info**, inspect **Video surface**, **Resolution**, **Engine**, and **Bitrate**. If the screen is black, try **Player → Reconnect video output**.
+4. For channels that never show video even inline, compare **Player → AVPlayer** and **Player → VLC**. Disable hardware decoding in Settings and reopen the channel as an additional diagnostic; it may reduce performance. Different codec, HDR or transport combinations may require further work.
+5. Confirm Live TV, XMLTV EPG, source selection, favorites, Movies, Series and Siri Remote navigation remain functional.
+
+## Validation and important limitations
+
+- Source-level Swift parser checks passed on the revised files. Full tvOS compilation **has not been performed here** because the tvOS SDK and Xcode are unavailable in this environment. GitHub Actions and testing on your Apple TV are required to verify compilation and rendering.
+- A persistent video surface is a targeted fix for view/layer replacement. It **does not guarantee playback of every 4K, HEVC, HDR10, Dolby Vision or MPEG-TS stream**. Some streams fail at decoding or are incompatible with the Apple TV hardware, available codecs or server packaging. Collect an exact problematic channel's codec/format, Info panel values and player's diagnostics before choosing further decoding changes.
+- The player does not add a new third-party playback library in this patch; AVPlayer and TVVLCKit stay as they are.
 
 ## Project and third-party licences
 

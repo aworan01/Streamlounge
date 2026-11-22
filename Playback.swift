@@ -21,7 +21,44 @@ import TVVLCKit
     private var vlcSamples: [(time: Date, bytes: Int64)] = []
     private var retried = false
     private var automatic = true
-    weak var layer: AVPlayerLayer?
+    // Keep one physical video UIView and AVPlayerLayer for the entire playback
+    // session. Recreating VLC drawables during inline-to-fullscreen transitions
+    // can leave audio playing while the rendered picture goes black.
+    let host = VideoHost(frame:.zero)
+    var layer: AVPlayerLayer { host.playerLayer }
+    init() {
+        host.playerLayer.player = native
+        vlc.drawable = host.vlcView
+    }
+    func mountVideo(in container: UIView) {
+        if host.superview !== container {
+            host.removeFromSuperview()
+            host.frame = container.bounds
+            host.autoresizingMask = [.flexibleWidth,.flexibleHeight]
+            container.addSubview(host)
+        }
+        host.frame=container.bounds
+        host.vlcView.isHidden = engine != "VLC"
+        host.playerLayer.player = engine == "AVPlayer" ? native : nil
+        host.setNeedsLayout()
+        host.layoutIfNeeded()
+    }
+    var videoOutputDescription:String {
+        let size=host.bounds.size
+        return "\(host.window == nil ? "Detached" : "Attached") • \(Int(size.width)) × \(Int(size.height)) view"
+    }
+    func reconnectVideoOutput() {
+        if engine == "VLC" {
+            vlc.drawable = nil
+            vlc.drawable = host.vlcView
+        } else {
+            host.playerLayer.player = nil
+            host.playerLayer.player = native
+        }
+        host.setNeedsLayout()
+        host.layoutIfNeeded()
+        status = "Video output reconnected • \(engine)"
+    }
     private var options: UserDefaults { .standard }
     func start(_ item: Media, force: String? = nil) {
         stop(); active=item; paused=false; retried=false
@@ -59,7 +96,7 @@ import TVVLCKit
             guard let item=native.currentItem else{return}
             let size=item.presentationSize
             let failed=item.status == .failed
-            let ready=layer?.isReadyForDisplay == true
+            let ready=layer.isReadyForDisplay
             if (failed || (elapsed>15 && !ready)), automatic, !retried {
                 retried=true;launch("VLC");return
             }
@@ -156,10 +193,20 @@ final class VideoHost:UIView {
     required init?(coder:NSCoder){fatalError("init(coder:) unavailable")}
     override func layoutSubviews(){super.layoutSubviews();vlcView.frame=bounds}
 }
+// The SwiftUI inline and fullscreen containers both mount the SAME
+// VideoHost. TVVLCKit keeps one stable drawable across the transition.
 struct PlayerSurface:UIViewRepresentable {
     @ObservedObject var session:PlaybackSession
-    func makeUIView(context:Context)->VideoHost{let view=VideoHost(frame:.zero);view.vlcView.isHidden=session.engine != "VLC";view.playerLayer.player=session.native;session.layer=view.playerLayer;session.vlc.drawable=view.vlcView;return view}
-    func updateUIView(_ view:VideoHost,context:Context){view.vlcView.isHidden=session.engine != "VLC";view.playerLayer.player=session.engine == "AVPlayer" ? session.native : nil;session.layer=view.playerLayer;if session.engine == "VLC", (session.vlc.drawable as? UIView) !== view.vlcView {session.vlc.drawable=view.vlcView}}
+    func makeUIView(context:Context)->UIView {
+        let container=UIView(frame:.zero)
+        container.backgroundColor = .black
+        container.isUserInteractionEnabled=false
+        session.mountVideo(in:container)
+        return container
+    }
+    func updateUIView(_ container:UIView,context:Context) {
+        session.mountVideo(in:container)
+    }
 }
 // Use a custom style rather than the tvOS system focus highlight. A tiny
 // wake target receives remote input without covering the video surface.
@@ -414,11 +461,13 @@ struct FullPlayer:View {
                     }
                 case "Player":
                     ForEach(["Auto","AVPlayer","VLC"],id:\.self){engine in option("engine-"+engine,engine,chosen:session.engine==engine){session.chooseEngine(engine)}}
+                    option("videoOutput","Reconnect video output"){session.reconnectVideoOutput()}
                     option("reload","Reload stream"){session.reload()}
                 default:
                     Text(item.name).font(.system(size:27,weight:.semibold));Text("Playlist: "+sourceName);Text("Category: "+item.group);Text("Engine: "+session.engine)
                     Text("Video quality: "+session.qualityLabel)
                     Text("Resolution: "+session.resolutionDescription)
+                    Text("Video surface: "+session.videoOutputDescription)
                     Text((session.engine == "VLC" ? "Bitrate (estimated): " : "Stream bitrate: ")+session.bitrateDescription)
                     if session.engine == "AVPlayer" {Text("Download throughput: "+session.throughputDescription)}
                     Text(session.status);if let host=httpURL(item.url)?.host {Text("Server: "+host)}

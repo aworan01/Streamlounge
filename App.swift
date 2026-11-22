@@ -161,6 +161,7 @@ struct Home:View {
     @State private var filter="All groups"
     @State private var sourceFilter="All sources"
     @State private var query=""
+    @State private var showPlaylistPicker=false
     @State private var play:Media?
     @State private var details:Media?
     @State private var editor:Source?
@@ -203,7 +204,7 @@ struct Home:View {
                         if direction == .right { moveSidebarRight() }
                     }
                     Spacer(minLength:0)
-                    Text("v0.2.5").font(.system(size:19)).foregroundStyle(.secondary)
+                    Text("v0.2.6").font(.system(size:19)).foregroundStyle(.secondary)
                 }.padding(18).frame(width:300).frame(maxHeight:.infinity,alignment:.topLeading).focusSection().background(Color.white.opacity(0.045))
             }
             VStack(alignment:.leading,spacing:14) {
@@ -223,6 +224,7 @@ struct Home:View {
         }.onChange(of:scenePhase){phase in if phase == .active {Task{await library.refreshAllGuides()}}}
         .fullScreenCover(item:$play){item in Playback(item:item,library:library)}
         .sheet(item:$details){item in SeriesView(item:item,library:library)}
+        .sheet(isPresented:$showPlaylistPicker){PlaylistSelectionView(sources:library.sources,selected:$sourceFilter)}
         .sheet(item:$guideItem){item in
             GuideView(item:item,library:library,onPlay:{channel in
                 guideItem=nil
@@ -252,20 +254,26 @@ struct Home:View {
     private var channelFilters:some View {
         VStack(alignment:.leading,spacing:10) {
             Text("Playlist").font(.system(size:20,weight:.semibold)).lineLimit(1)
-            Picker("Choose playlist",selection:$sourceFilter) {
-                Text("All playlists").tag("All sources")
-                ForEach(library.sources){s in Text(s.name).tag(s.id.uuidString)}
-            }
-            .font(.system(size:18))
-            .onChange(of:sourceFilter){_ in filter="All groups"}
-            .focused($homeFocus,equals:.content)
-            Text(currentPlaylistName)
-                .font(.system(size:18,weight:.medium))
+            Button { showPlaylistPicker=true } label: {
+                HStack(alignment:.top,spacing:12) {
+                    Text(currentPlaylistName)
+                        .font(.system(size:19,weight:.medium))
+                        .lineLimit(nil)
+                        .fixedSize(horizontal:false,vertical:true)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth:.infinity,alignment:.leading)
+                    Image(systemName:"chevron.up.chevron.down").font(.system(size:18))
+                }
                 .foregroundStyle(.cyan)
-                .lineLimit(nil)
-                .fixedSize(horizontal:false,vertical:true)
+                .padding(.horizontal,12).padding(.vertical,12)
                 .frame(maxWidth:.infinity,alignment:.leading)
-                .accessibilityLabel("Selected playlist: " + currentPlaylistName)
+                .background(RoundedRectangle(cornerRadius:8).fill(.white.opacity(0.05)))
+                .overlay(RoundedRectangle(cornerRadius:8).strokeBorder(.cyan.opacity(0.30),lineWidth:1))
+            }
+            .buttonStyle(CompactFocusStyle(inset:0))
+            .focused($homeFocus,equals:.content)
+            .accessibilityLabel("Choose playlist: " + currentPlaylistName)
+            .onChange(of:sourceFilter){_ in filter="All groups"}
             Text("Categories").font(.system(size:20,weight:.semibold)).foregroundStyle(.secondary)
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:12) {
@@ -282,7 +290,7 @@ struct Home:View {
                     .padding(8)
                 }
             }
-        }.frame(width:290).frame(maxHeight:.infinity,alignment:.top).focusSection()
+        }.frame(width:410).frame(maxHeight:.infinity,alignment:.top).focusSection()
     }
     private var liveView:some View {
         HStack(alignment:.top,spacing:16) {
@@ -298,7 +306,7 @@ struct Home:View {
                             if library.favorites.contains(item.id){Image(systemName:"star.fill").font(.system(size:19)).foregroundStyle(.yellow)}
                         }.foregroundStyle(selected?.id == item.id ? Color.cyan : Color.primary).padding(.vertical,3).frame(maxWidth:.infinity,alignment:.leading)}.focused($homeFocus,equals:.channel(item.id)).contextMenu{Button(library.favorites.contains(item.id) ? "Remove favorite" : "Add favorite"){library.toggle(item)}}
                     }}.padding(8)}
-                }.frame(width:465).frame(maxHeight:.infinity,alignment:.top).focusSection()
+                }.frame(width:490).frame(maxHeight:.infinity,alignment:.top).focusSection()
             }
             VStack(alignment:.leading,spacing:12) {
                 if let item=selected {
@@ -402,4 +410,60 @@ struct GuideView:View {
         }.padding(65).onAppear{manualID=library.manualGuideIDs[item.id] ?? ""}
     }
     private func refresh(){if let source=library.sources.first(where:{$0.id==item.sourceID}){Task{await library.loadGuide(source)}}}
+}
+
+// A full-width, scrolling playlist chooser avoids the intrinsic text truncation
+// of the system tvOS Picker and remains reachable using the Siri Remote.
+private struct PlaylistSelectionView: View {
+    let sources:[Source]
+    @Binding var selected:String
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused:String?
+    var body: some View {
+        VStack(alignment:.leading,spacing:18) {
+            HStack {
+                Text("Choose playlist").font(.system(size:38,weight:.bold))
+                Spacer()
+                Button("Close"){dismiss()}
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment:.leading,spacing:12) {
+                        choice("All sources","All playlists")
+                        ForEach(sources){source in
+                            choice(source.id.uuidString,source.name)
+                        }
+                    }.padding(.vertical,12)
+                }
+                .onAppear {
+                    let id=selected
+                    DispatchQueue.main.async {proxy.scrollTo(id,anchor:.center);focused=id}
+                }
+            }
+        }
+        .padding(54)
+        .frame(width:1100,height:850,alignment:.topLeading)
+        .background(Color(red:0.08,green:0.10,blue:0.15))
+    }
+    private func choice(_ id:String,_ name:String)->some View {
+        Button {
+            selected=id
+            dismiss()
+        } label: {
+            HStack(spacing:16) {
+                Text(name)
+                    .font(.system(size:23))
+                    .lineLimit(nil)
+                    .fixedSize(horizontal:false,vertical:true)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth:.infinity,alignment:.leading)
+                if selected == id {Image(systemName:"checkmark.circle.fill").foregroundStyle(.cyan)}
+            }
+            .padding(15)
+            .background(RoundedRectangle(cornerRadius:10).fill(selected == id ? Color.cyan.opacity(0.12) : Color.white.opacity(0.04)))
+        }
+        .buttonStyle(CompactFocusStyle(inset:3))
+        .focused($focused,equals:id)
+        .id(id)
+    }
 }
