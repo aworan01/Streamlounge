@@ -34,6 +34,26 @@ struct ManualFocusStyle: ButtonStyle {
     @Published var media:[Media] = []
     @Published var favorites:Set<String> = []
     @Published var history:[String] = []
+    @Published var bookmarks:[String:PlaybackBookmark] = [:]
+    @Published var movieCache:[String:MovieInformation] = [:]
+    func bookmark(for item:Media)->PlaybackBookmark? { bookmarks[item.id] }
+    func record(_ item:Media,seconds:Double,duration:Double) {
+        guard item.kind != .live, seconds.isFinite, duration.isFinite, duration>0,
+              seconds>=0 else { return }
+        let done=seconds/duration >= 0.95
+        bookmarks[item.id]=PlaybackBookmark(seconds:seconds,duration:duration,updated:Date(),completed:done)
+        if let data=try? JSONEncoder().encode(bookmarks) {UserDefaults.standard.set(data,forKey:"vodBookmarksV1")}
+    }
+    func forgetProgress(){bookmarks=[:];UserDefaults.standard.removeObject(forKey:"vodBookmarksV1")}
+    func clearProgress(_ item:Media){bookmarks[item.id]=nil;if let data=try? JSONEncoder().encode(bookmarks){UserDefaults.standard.set(data,forKey:"vodBookmarksV1")}}
+    func movieInformation(for item:Media)->MovieInformation?{movieCache[item.id]}
+    func loadMovieInformation(_ item:Media) async {
+        guard movieCache[item.id]==nil,let source=sources.first(where:{$0.id==item.sourceID}) else{return}
+        if let info=await fetchMovieInformation(source:source,item:item) {
+            movieCache[item.id]=info
+            if let data=try? JSONEncoder().encode(movieCache){UserDefaults.standard.set(data,forKey:"movieMetadataV1")}
+        }
+    }
     @Published var guides:[UUID:GuideSnapshot] = [:]
     @Published var epgBusy = false
     @Published var guideClock=Date()
@@ -63,11 +83,27 @@ struct ManualFocusStyle: ButtonStyle {
     @Published var message = ""
     private let defaults = UserDefaults.standard
     private var cache: URL { FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0].appendingPathComponent("stream-catalog.json") }
+    private var importFolder: URL {FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("imported-m3u",isDirectory:true)}
+    func importM3UFile(_ contents:String) async -> Bool {
+        let id=UUID()
+        let path=importFolder.appendingPathComponent(id.uuidString+".m3u")
+        do {
+            try FileManager.default.createDirectory(at:importFolder,withIntermediateDirectories:true)
+            try contents.write(to:path,atomically:true,encoding:.utf8)
+        } catch {message="Could not store imported playlist: \(error.localizedDescription)";return false}
+        let source=Source(id:id,name:"Imported M3U "+Date().formatted(date:.abbreviated,time:.shortened),address:path.path,type:"Local M3U")
+        let ok=await load(source)
+        if !ok {try? FileManager.default.removeItem(at:path)}
+        return ok
+    }
     init() {
         sources = (try? JSONDecoder().decode([Source].self,from:defaults.data(forKey:"sources") ?? Data())) ?? []
         media = (try? JSONDecoder().decode([Media].self,from:Data(contentsOf:cache))) ?? []
         favorites = Set(defaults.stringArray(forKey:"favorites") ?? [])
         history = defaults.stringArray(forKey:"history") ?? []
+        bookmarks = (try? JSONDecoder().decode([String:PlaybackBookmark].self,from:defaults.data(forKey:"vodBookmarksV1") ?? Data())) ?? [:]
+        movieCache = (try? JSONDecoder().decode([String:MovieInformation].self,from:defaults.data(forKey:"movieMetadataV1") ?? Data())) ?? [:]
+        PlaybackCrashGuard.inspectPreviousLaunch()
         manualGuideIDs = defaults.dictionary(forKey:"manualGuideIDs") as? [String:String] ?? [:]
         for source in sources {if let data=try? Data(contentsOf:guideFile(source.id)),let cached=try? JSONDecoder().decode(GuideSnapshot.self,from:data){guides[source.id]=cached}}
     }
@@ -77,8 +113,12 @@ struct ManualFocusStyle: ButtonStyle {
         defaults.set(Array(favorites),forKey:"favorites"); defaults.set(history,forKey:"history")
     }
     func toggle(_ item:Media) { if favorites.contains(item.id) { favorites.remove(item.id) } else { favorites.insert(item.id) }; save() }
+    func moveSource(_ source:Source,offset:Int) {
+        guard let index=sources.firstIndex(where:{$0.id==source.id}),sources.indices.contains(index+offset) else{return}
+        sources.swapAt(index,index+offset);save()
+    }
     func watched(_ item:Media) { history.removeAll { $0 == item.id }; history.insert(item.id,at:0); history=Array(history.prefix(100)); defaults.set(history,forKey:"history") }
-    func remove(_ source:Source) { let ids=Set(media.filter{$0.sourceID == source.id}.map(\.id)); favorites.subtract(ids); history.removeAll{ids.contains($0)}; sources.removeAll{$0.id == source.id}; media.removeAll{$0.sourceID == source.id}; guides[source.id]=nil; attempts[source.id]=nil; try? FileManager.default.removeItem(at:guideFile(source.id)); for id in ids {manualGuideIDs[id]=nil};defaults.set(manualGuideIDs,forKey:"manualGuideIDs"); save() }
+    func remove(_ source:Source) { if source.type == "Local M3U" && source.address.hasPrefix(importFolder.path+"/") {try? FileManager.default.removeItem(atPath:source.address)};let ids=Set(media.filter{$0.sourceID == source.id}.map(\.id)); favorites.subtract(ids); history.removeAll{ids.contains($0)}; sources.removeAll{$0.id == source.id}; media.removeAll{$0.sourceID == source.id}; guides[source.id]=nil; attempts[source.id]=nil; try? FileManager.default.removeItem(at:guideFile(source.id)); for id in ids {manualGuideIDs[id]=nil;bookmarks[id]=nil;movieCache[id]=nil};defaults.set(manualGuideIDs,forKey:"manualGuideIDs");if let data=try? JSONEncoder().encode(bookmarks){defaults.set(data,forKey:"vodBookmarksV1")};if let data=try? JSONEncoder().encode(movieCache){defaults.set(data,forKey:"movieMetadataV1")}; save() }
     func load(_ s:Source) async -> Bool {
         guard !busy else { return false }; busy=true; message=""; defer {busy=false}
         var s=s
@@ -90,6 +130,12 @@ struct ManualFocusStyle: ButtonStyle {
                 for kind in [MediaKind.live,.movie,.series] { do { items += try await api.catalog(kind) } catch { failed.append(kind.rawValue) } }
                 if !failed.isEmpty { message="Unavailable sections: "+failed.joined(separator:", ") }
             } else if s.type == "Pasted M3U" { s.discoveredEPG=guideURLs(in:s.pasted,base:nil);items=parseM3U(s.pasted,source:s) }
+            else if s.type == "Local M3U" {
+                let raw=try Data(contentsOf:URL(fileURLWithPath:s.address))
+                guard let text=String(data:raw,encoding:.utf8) ?? String(data:raw,encoding:.isoLatin1) else {throw StreamFailure.invalidData}
+                s.discoveredEPG=guideURLs(in:text,base:nil)
+                items=parseM3U(text,source:s)
+            }
             else {
                 guard let url=httpURL(s.address) else {throw StreamFailure.invalidURL}
                 let data=try await fetch(url); guard let text=String(data:data,encoding:.utf8) ?? String(data:data,encoding:.isoLatin1) else {throw StreamFailure.invalidData}; s.discoveredEPG=guideURLs(in:text,base:url);items=parseM3U(text,source:s)
@@ -148,6 +194,7 @@ struct ManualFocusStyle: ButtonStyle {
 enum Page:String,CaseIterable,Hashable {case home="Dashboard",live="Live TV",guide="TV Guide",movies="Movies",series="Series",favorites="Favorites",history="Recently viewed",sources="Playlists",settings="Settings"}
 enum HomeFocus: Hashable { case nav(Page), content, channel(String), settingsSection(String), settingsOption }
 struct Home:View {
+    @State private var didApplyStartupPage=false
     @FocusState private var homeFocus: HomeFocus?
     @AppStorage("textDensity") private var textDensity = "Compact"
     private var labelSize: CGFloat { textDensity == "Large" ? 30 : textDensity == "Standard" ? 26 : 22 }
@@ -219,11 +266,22 @@ struct Home:View {
             }.padding(expanded ? 0 : 24).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading).focusSection()
         }.background(backgroundColor.ignoresSafeArea()).onExitCommand {if expanded {return} else if selected != nil {playback.stop();selected=nil} else {page = .home}}
         .task {
+            if !didApplyStartupPage {
+                didApplyStartupPage=true
+                let preferred=UserDefaults.standard.string(forKey:"startPage") ?? "Dashboard"
+                if let p=Page.allCases.first(where:{$0.rawValue==preferred}) {page=p}
+                if UserDefaults.standard.bool(forKey:"autoRefreshPlaylists") {
+                    for source in library.sources where source.type != "Pasted M3U" { _ = await library.load(source) }
+                }
+            }
             if UserDefaults.standard.object(forKey:"epgOnStart") as? Bool ?? true {await library.refreshAllGuides()}
             while !Task.isCancelled {try? await Task.sleep(nanoseconds:60_000_000_000);if !Task.isCancelled && scenePhase == .active {library.guideClock=Date();await library.refreshAllGuides()}}
         }.onChange(of:scenePhase){phase in if phase == .active {Task{await library.refreshAllGuides()}}}
         .fullScreenCover(item:$play){item in Playback(item:item,library:library)}
-        .sheet(item:$details){item in SeriesView(item:item,library:library)}
+        .sheet(item:$details){item in
+            if item.kind == .series { SeriesView(item:item,library:library) }
+            else { MovieDetailsView(item:item,library:library) }
+        }
         .sheet(isPresented:$showPlaylistPicker){PlaylistSelectionView(sources:library.sources,selected:$sourceFilter)}
         .sheet(item:$guideItem){item in
             GuideView(item:item,library:library,onPlay:{channel in
@@ -238,6 +296,11 @@ struct Home:View {
     }
     private func openPage(_ p:Page,enter:Bool) {
         if p != page {playback.stop(); selected=nil; filter="All groups";sourceFilter="All sources";query="";page=p}
+        if p == .live,(UserDefaults.standard.object(forKey:"rememberLastChannel") as? Bool ?? true),
+           selected == nil,let last=UserDefaults.standard.string(forKey:"lastLiveChannelID"),
+           let channel=library.media.first(where:{$0.id==last && $0.kind == .live}) {
+            selectChannel(channel)
+        }
         if enter { Task { @MainActor in await Task.yield(); homeFocus = .content } }
     }
     private func moveSidebarRight() {
@@ -246,7 +309,13 @@ struct Home:View {
     }
     private var backgroundColor:Color { appearance == "Black OLED" ? .black : Color(red:0.055,green:0.075,blue:0.12) }
     private func pageIcon(_ p:Page)->String { switch p {case .home:return "house";case .live:return "tv";case .guide:return "calendar";case .movies:return "film";case .series:return "play.rectangle.on.rectangle";case .favorites:return "star";case .history:return "clock";case .sources:return "list.bullet";case .settings:return "gearshape"} }
-    private func selectChannel(_ item:Media) { selected=item;library.watched(item);playback.start(item) }
+    private func selectChannel(_ item:Media) {
+        selected=item;library.watched(item)
+        if UserDefaults.standard.object(forKey:"rememberLastChannel") as? Bool ?? true {
+            UserDefaults.standard.set(item.id,forKey:"lastLiveChannelID")
+        } else { UserDefaults.standard.removeObject(forKey:"lastLiveChannelID") }
+        playback.start(item)
+    }
     private var currentPlaylistName:String {
         guard sourceFilter != "All sources",let id=UUID(uuidString:sourceFilter) else{return "All playlists"}
         return library.sources.first(where:{$0.id==id})?.name ?? "All playlists"
@@ -336,8 +405,8 @@ struct Home:View {
     private var guideBrowser:some View {
         HStack(alignment:.top,spacing:20){channelFilters;GuideTimeline(items:shown,library:library,play:{startFromGuide($0)},details:{guideItem=$0})}
     }
-    private var dashboard:some View {ScrollView{VStack(alignment:.leading,spacing:25){if library.sources.isEmpty{Text("Add your first playlist").font(.title2);Button("Add playlist"){add=true}.focused($homeFocus,equals:.content)}else{HStack{Button{openPage(.live,enter:true)}label:{Label("Live TV",systemImage:"tv")}.focused($homeFocus,equals:.content);ForEach([Page.movies,.series,.sources],id:\.self){p in Button{openPage(p,enter:true)}label:{Label(p.rawValue,systemImage:pageIcon(p))}}};dashboardRow("Recently viewed",base);dashboardRow("Favorites",library.media.filter{library.favorites.contains($0.id)});dashboardRow("Movies",library.media.filter{$0.kind == .movie});dashboardRow("Series",library.media.filter{$0.kind == .series})}}}}
-    private func dashboardRow(_ title:String,_ items:[Media])->some View {VStack(alignment:.leading,spacing:10){Text(title).font(.title3.bold());if items.isEmpty{Text("Nothing here yet").font(.caption).foregroundStyle(.secondary)}else{ScrollView(.horizontal){HStack(spacing:25){ForEach(Array(items.prefix(20))){item in Button{if item.kind == .series{details=item}else if item.kind == .live{page = .live;selectChannel(item)}else{library.watched(item);play=item}}label:{MediaTile(item:item,favorite:library.favorites.contains(item.id)).frame(width:230)}.buttonStyle(CompactFocusStyle(inset: 3))}}.padding(16)}}}}
+    private var dashboard:some View {ScrollView{VStack(alignment:.leading,spacing:25){if library.sources.isEmpty{Text("Add your first playlist").font(.title2);Button("Add playlist"){add=true}.focused($homeFocus,equals:.content)}else{HStack{Button{openPage(.live,enter:true)}label:{Label("Live TV",systemImage:"tv")}.focused($homeFocus,equals:.content);ForEach([Page.movies,.series,.sources],id:\.self){p in Button{openPage(p,enter:true)}label:{Label(p.rawValue,systemImage:pageIcon(p))}}};dashboardRow("Continue watching",library.media.filter{($0.kind == .movie || $0.kind == .episode) && (library.bookmark(for:$0)?.seconds ?? 0)>=30 && library.bookmark(for:$0)?.completed == false}.sorted{(library.bookmark(for:$0)?.updated ?? .distantPast) > (library.bookmark(for:$1)?.updated ?? .distantPast)});dashboardRow("Recently viewed",base);dashboardRow("Favorites",library.media.filter{library.favorites.contains($0.id)});dashboardRow("Movies",library.media.filter{$0.kind == .movie});dashboardRow("Series",library.media.filter{$0.kind == .series})}}}}
+    private func dashboardRow(_ title:String,_ items:[Media])->some View {VStack(alignment:.leading,spacing:10){Text(title).font(.title3.bold());if items.isEmpty{Text("Nothing here yet").font(.caption).foregroundStyle(.secondary)}else{ScrollView(.horizontal){HStack(spacing:25){ForEach(Array(items.prefix(20))){item in Button{if item.kind == .series{details=item}else if item.kind == .live{page = .live;selectChannel(item)}else{details=item}}label:{MediaTile(item:item,favorite:library.favorites.contains(item.id),bookmark:library.bookmark(for:item),poster:library.movieInformation(for:item)?.poster).frame(width:230)}.buttonStyle(CompactFocusStyle(inset: 3))}}.padding(16)}}}}
     private var browseView:some View {
         HStack(alignment:.top,spacing:30){
             VStack(alignment:.leading,spacing:10){
@@ -351,25 +420,46 @@ struct Home:View {
                 TextField("Search channels, movies or series",text:$query).focused($homeFocus,equals:.content)
                 if shown.isEmpty {Text("No items in this view.").foregroundStyle(.secondary);Spacer()}
                 else {ScrollView {LazyVGrid(columns:[GridItem(.adaptive(minimum:240),spacing:22)],spacing:35){ForEach(shown){item in
-                    Button {if item.kind == .series {details=item} else if item.kind == .live {page = .live;filter="All groups";sourceFilter="All sources";query="";selectChannel(item)} else {library.watched(item);play=item}} label:{MediaTile(item:item,favorite:library.favorites.contains(item.id))}
+                    Button {if item.kind == .series {details=item} else if item.kind == .live {page = .live;filter="All groups";sourceFilter="All sources";query="";selectChannel(item)} else {details=item}} label:{MediaTile(item:item,favorite:library.favorites.contains(item.id),bookmark:library.bookmark(for:item),poster:library.movieInformation(for:item)?.poster)}
                         .buttonStyle(CompactFocusStyle(inset: 3))
                         .contextMenu {Button(library.favorites.contains(item.id) ? "Remove favorite" : "Add favorite"){library.toggle(item)};if item.kind == .live {Button("Programme guide"){guideItem=item}}}
                 }}}}
             }.frame(maxWidth:.infinity)
         }
     }
+    @StateObject private var lanImporter=LocalM3UServer()
     private var sourceView:some View {
-        VStack(alignment:.leading,spacing:20){Button{add=true}label:{Label("Add source",systemImage:"plus")}.focused($homeFocus,equals:.content).disabled(library.busy)
-            ScrollView {LazyVStack(alignment:.leading,spacing:25){ForEach(library.sources){s in HStack{VStack(alignment:.leading){Text(s.name).font(.headline);Text(s.type+" · \(library.media.filter{$0.sourceID==s.id}.count) items").font(.caption).foregroundStyle(.secondary)};Spacer();Button("Refresh"){Task{_ = await library.load(s)}}.disabled(library.busy);Button("EPG"){Task{await library.loadGuide(s)}}.disabled(library.epgBusy);Button("Edit"){editor=s}.disabled(library.busy);Button("Remove"){removeSource=s}.disabled(library.busy)}}}}
+        VStack(alignment:.leading,spacing:20){HStack(spacing:18){Button{add=true}label:{Label("Add source",systemImage:"plus")}.focused($homeFocus,equals:.content).disabled(library.busy)
+            Button(lanImporter.running ? "Stop local transfer" : "Import M3U from phone/computer"){
+                if lanImporter.running {lanImporter.stop()} else {
+                    lanImporter.onM3U = { contents in
+                        Task { @MainActor in
+                            _ = await library.importM3UFile(contents)
+                        }
+                    }
+                    lanImporter.start()
+                }
+            }.disabled(library.busy)
+            }
+            if lanImporter.running {Text("Open "+lanImporter.address+" on your phone or computer. PIN: "+lanImporter.pin).font(.title3).foregroundStyle(.cyan)}
+            if !lanImporter.status.isEmpty {Text(lanImporter.status).font(.caption).foregroundStyle(.secondary)}
+            ScrollView {LazyVStack(alignment:.leading,spacing:25){ForEach(library.sources){s in HStack{VStack(alignment:.leading){Text(s.name).font(.headline);Text(s.type+" · \(library.media.filter{$0.sourceID==s.id}.count) items").font(.caption).foregroundStyle(.secondary)};Spacer();Button("Refresh"){Task{_ = await library.load(s)}}.disabled(library.busy);Button("EPG"){Task{await library.loadGuide(s)}}.disabled(library.epgBusy);Button("Up"){library.moveSource(s,offset:-1)}.disabled(library.busy || library.sources.first?.id==s.id)
+                    Button("Down"){library.moveSource(s,offset:1)}.disabled(library.busy || library.sources.last?.id==s.id)
+                    Button("Edit"){editor=s}.disabled(library.busy);Button("Remove"){removeSource=s}.disabled(library.busy)}}}}
         }.frame(maxHeight:.infinity,alignment:.topLeading)
+         .onDisappear{lanImporter.stop()}
     }
 }
 struct MediaTile:View {
-    var item:Media; var favorite:Bool
+    var item:Media; var favorite:Bool; var bookmark:PlaybackBookmark? = nil;var poster:String?=nil
     var body:some View {VStack(alignment:.leading,spacing:8){
-        ZStack{RoundedRectangle(cornerRadius:12).fill(Color.white.opacity(0.09));if let url=httpURL(item.logo){AsyncImage(url:url){image in image.resizable().scaledToFit()} placeholder:{Image(systemName:icon).font(.largeTitle).foregroundStyle(.secondary)}}else{Image(systemName:icon).font(.largeTitle).foregroundStyle(.secondary)}}.frame(height:135).clipped()
+        ZStack{RoundedRectangle(cornerRadius:12).fill(Color.white.opacity(0.09));if let url=httpURL((poster?.isEmpty == false ? poster : nil) ?? item.logo){AsyncImage(url:url){image in image.resizable().scaledToFit()} placeholder:{Image(systemName:icon).font(.largeTitle).foregroundStyle(.secondary)}}else{Image(systemName:icon).font(.largeTitle).foregroundStyle(.secondary)}}.frame(height:135).clipped()
         HStack{Text(item.name).font(.system(size:24,weight:.medium)).lineLimit(nil).fixedSize(horizontal:false,vertical:true);Spacer(minLength:0);if favorite{Image(systemName:"star.fill").foregroundStyle(.yellow).font(.caption)}}
         Text(item.group).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        if let mark=bookmark,mark.seconds>=30,!mark.completed {
+            ProgressView(value:mark.progress).tint(.cyan)
+            Text("Resume at "+formatPlaybackTime(Int(mark.seconds))).font(.caption2).foregroundStyle(.secondary)
+        }
     }.padding(10).frame(maxWidth:.infinity,alignment:.leading)}
     var icon:String {item.kind == .live ? "tv" : (item.kind == .movie ? "film" : "play.rectangle.on.rectangle")}
 }
@@ -379,9 +469,9 @@ struct SourceEditor:View {
     @Environment(\.dismiss) private var dismiss
     var body:some View {ScrollView {VStack(alignment:.leading,spacing:24){
         Text("Playlist / account").font(.title.bold())
-        Picker("Source type",selection:$source.type){ForEach(["M3U URL","Pasted M3U","Xtream"],id:\.self){Text($0).tag($0)}}.disabled(library.busy)
+        Picker("Source type",selection:$source.type){ForEach(["M3U URL","Pasted M3U","Xtream"] + (source.type == "Local M3U" ? ["Local M3U"] : []),id:\.self){Text($0).tag($0)}}.disabled(library.busy || source.type == "Local M3U")
         TextField("Display name",text:$source.name)
-        if source.type == "Pasted M3U" {TextField("Paste M3U text using Apple TV keyboard",text:$source.pasted)} else {TextField(source.type == "Xtream" ? "Server URL (https://host:port)" : "Playlist URL",text:$source.address)}
+        if source.type == "Pasted M3U" {TextField("Paste M3U text using Apple TV keyboard",text:$source.pasted)} else if source.type == "Local M3U" {Text("Stored locally on Apple TV — use Playlists → Refresh to reload the imported file").foregroundStyle(.secondary)} else {TextField(source.type == "Xtream" ? "Server URL (https://host:port)" : "Playlist URL",text:$source.address)}
         if source.type == "Xtream" {TextField("Username",text:$source.user);SecureField("Password",text:$source.password)}
         TextField("Custom XMLTV URLs (space-separated, optional)",text:$source.epg)
         TextField("EPG country codes (e.g. UK, US, NG, ZA)",text:Binding(get:{source.epgCountries ?? ""},set:{source.epgCountries=$0}))

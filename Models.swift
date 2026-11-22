@@ -125,3 +125,8 @@ struct Xtream {
     }
 }
 func str(_ value: Any?) -> String { if let s=value as? String { return s }; if let n=value as? NSNumber { return n.stringValue }; return "" }
+
+func formatPlaybackTime(_ seconds:Int)->String {
+    let h=seconds/3600,m=(seconds/60)%60,s=seconds%60
+    return h>0 ? String(format:"%d:%02d:%02d",h,m,s) : String(format:"%d:%02d",m,s)
+}

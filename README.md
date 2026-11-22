@@ -1,38 +1,74 @@
-# Stream Lounge TV v0.2.6 — full playlist names, persistent video output, fullscreen HDR diagnostics
+# Stream Lounge TV v0.3.0 — test build
 
-Native SwiftUI tvOS IPTV player. This release updates v0.2.5 without changing the bundle identifier (`com.streamlounge.tv`), player engines (AVPlayer / TVVLCKit), IPTV sources or EPG cache. No IPTV streams or programme data are bundled. Use only sources you are authorized to access.
+A separately named **native SwiftUI tvOS** IPTV app adapting selected IPTVnator v0.25.0 logic. This release builds on the tested v0.2.6 code. It does **not** include channels, subscriptions, movies, streaming credentials, or paid content. Use authorized playlists.
 
-## Updating in your existing GitHub repository (web only)
+## Builds available
 
-Replace these root files together: `App.swift`, `Playback.swift`, `project.yml`, and `README.md`. Do **not** delete the existing `EPG.swift`, `Podfile`, `LICENSE.md` or `.github/workflows/build-tvos.yml`. The update ZIP contains only changed files; the full source ZIP contains all files including the unchanged files and the workflow.
+**Recommended first: `Build tvOS IPA`** in `.github/workflows/build-tvos.yml`. Uses `project.yml`, AVPlayer and TVVLCKit 3.7.3, on macos-15/Xcode 16.4. It intentionally does **not** link KSPlayer. Same `com.streamlounge.tv` bundle ID, so it can update the current app while preserving data when signed with the same signing identity. Do not uninstall your working version until you have a backup.
 
-Commit and run **Actions → Build tvOS IPA → Run workflow**. On success, download the `StreamLoungeTV-unsigned` artifact, sign it using your normal tvOS signing method, then install on Apple TV. This is an unsigned IPA build. Keep a copy of the previous installed/tested version.
+**Experimental: `Build KSPlayer tvOS IPA (experimental)`** in `.github/workflows/build-tvos-ks-experimental.yml`. Uses `project.ksplayer.yml`, `KSPlayer` 5.6.2, macos-26 with Xcode 26.2, while retaining AVPlayer and TVVLCKit for comparison. KSPlayer is visible in the settings **only if that experiment actually compiles**. The KSPlayer integration has not been verified by a complete tvOS Xcode build and may require follow-up fixes; don't overwrite the working build with it before testing. GPL-3.0 obligations apply to redistribution of this linked build. Experimental KSPlayer playback has basic embedded controls; AVPlayer/VLC features such as track selection, bitrate reporting and saved positions are **not** yet wired to the KSPlayer engine.
 
-## What changed
+## Updating from v0.2.6 through the GitHub website
 
-1. **Full playlist names in Live TV:** The source/filter column expands from 290 to 410 points. Rather than trusting a compact tvOS `Picker` to show an arbitrary name, the page now uses a wide, multiline button displaying the selected playlist name in full. It opens a spacious, scrolling selection sheet where each playlist name wraps without truncation.
-2. **Inline-to-fullscreen video:** The previous implementation recreated `VideoHost` (and rebound TVVLCKit's `drawable`) every time a separate `PlayerSurface` appeared. The `PlaybackSession` now owns one persistent `VideoHost` with a single AVPlayerLayer and VLC drawable. Switching surfaces only moves the existing view to its new container. This targets the "video inline / audio-only fullscreen" failure mode.
-3. **Manual recovery / diagnostics:** In fullscreen **Player** controls choose **Reconnect video output** to rebind the current engine's video output without importing playlists again. In **Info** the video surface attachment and dimensions appear alongside decoder resolution, engine and measured bitrate.
-4. **Current playback and navigation retained:** All v0.2.5 TV Guide, Now Playing channel and group navigation, SD/HD/FHD/4K labels, EPGShare support, subtitles, favorites and the existing user data keys remain in place.
+1. Download and extract the **update ZIP**. In the repository root replace `App.swift`, `Playback.swift`, `Models.swift`, `Settings.swift`, `project.yml`, and `README.md`.
+2. Add `ViewingData.swift`, `MovieDetailsView.swift`, `LocalM3UServer.swift`, and `KSPlayerBridge.swift` to the repository root.
+3. Add `project.ksplayer.yml` to the root and `.github/workflows/build-tvos-ks-experimental.yml` at that **exact path**. The original `.github/workflows/build-tvos.yml`, `EPG.swift`, `GuideUI.swift`, `Podfile`, and `LICENSE.md` stay in place.
+4. Commit the changes. From **Actions**, run **Build tvOS IPA** (the standard AVPlayer/VLC workflow) first. After a successful run, obtain the **unsigned** IPA from Artifacts, sign it using your established method, and test on Apple TV. The KSPlayer workflow is a separate, optional second build.
+5. Never upload playlist credentials or real M3U contents to a public GitHub repository. Only the app source files belong in the repo.
 
-## GitHub installation (web only)
+If starting from scratch, the **complete ZIP** includes the original + revised source, both workflows and the necessary tests.
 
-For an existing working v0.2.5 repository, upload the four changed files to the project root and commit. Keep `EPG.swift`, `GuideUI.swift`, `Models.swift`, `Settings.swift`, `Podfile`, `LICENSE.md` and `.github/workflows/build-tvos.yml` unchanged. Open **Actions → Build tvOS IPA → Run workflow**. Download `StreamLoungeTV-unsigned` from the successful run; sign and sideload with your established tvOS tool. Do not delete the installed previous version until the replacement works on your device.
+## Scope delivered
 
-## Suggested TV tests
+### 1 — 4K/HDR stability and audio
 
-1. In **Live TV**, select a playlist with a long name. It should appear over one or more readable lines, not as an ellipsis. Press Select to open the new full-width playlist chooser; check every long entry and remote focus.
-2. Start a known working HD channel inline, enter fullscreen, and return inline several times. It should continue displaying video rather than going black.
-3. Repeat step 2 on a 4K/HDR channel that previously played inline but went black fullscreen. In **Now Playing → Info**, inspect **Video surface**, **Resolution**, **Engine**, and **Bitrate**. If the screen is black, try **Player → Reconnect video output**.
-4. For channels that never show video even inline, compare **Player → AVPlayer** and **Player → VLC**. Disable hardware decoding in Settings and reopen the channel as an additional diagnostic; it may reduce performance. Different codec, HDR or transport combinations may require further work.
-5. Confirm Live TV, XMLTV EPG, source selection, favorites, Movies, Series and Siri Remote navigation remain functional.
+- Automatic playback uses AVPlayer first for compatible HLS 4K/HDR streams. VLC is prioritized for non-native file extensions such as MKV/AVI/TS and remains an explicit option. No promised blanket 4K, HDR or Dolby Vision support: device capabilities, video bit depth/profile, container and transport still determine playback.
+- Per-channel crash breadcrumb: if the previous playback ends without normal stop, the next app launch marks the affected channel for a native-player recovery attempt **without an immediate VLC fallback**. The marker can also be created by abruptly terminating the app; it is a diagnostic/recovery heuristic, not a crash report or guaranteed fix.
+- The AVPlayer **Audio** menu no longer presents the audio-disabled choice. VLC audio-track IDs are checked before selection, and **Now Playing → Audio → Restore default sound** is available. Unplayable codecs and mislabelled provider tracks can still be silent.
+- The existing `Now Playing → Info` stream diagnostics and persistent video rendering surface remain in place.
 
-## Validation and important limitations
+### 5 — Movie details and resume
 
-- Source-level Swift parser checks passed on the revised files. Full tvOS compilation **has not been performed here** because the tvOS SDK and Xcode are unavailable in this environment. GitHub Actions and testing on your Apple TV are required to verify compilation and rendering.
-- A persistent video surface is a targeted fix for view/layer replacement. It **does not guarantee playback of every 4K, HEVC, HDR10, Dolby Vision or MPEG-TS stream**. Some streams fail at decoding or are incompatible with the Apple TV hardware, available codecs or server packaging. Collect an exact problematic channel's codec/format, Info panel values and player's diagnostics before choosing further decoding changes.
-- The player does not add a new third-party playback library in this patch; AVPlayer and TVVLCKit stay as they are.
+- Movie detail sheet with posters, description, year, genre, runtime and ratings **where the existing source supplies those fields**. For existing Xtream movie entries this calls `get_vod_info`; M3U movies retain the name/logo from their playlist, and no third-party metadata provider is contacted.
+- Play, Resume, Restart and Favorite actions; local VOD progress stored on the device for AVPlayer/VLC (recorded about every five seconds). A title watched to at least 95% is marked complete. Resume is not promised for live streams or the experimental KSPlayer engine.
 
-## Project and third-party licences
+### 6 — Playlist management
 
-The IPTVnator v0.25.0 utility/URL-construction adaptations remain under MIT, copyright 4gray; see `LICENSE.md`. IMD TV's GPL-3.0 EPG architecture was reviewed as a reference, but the included Swift EPG code is independently written. TVVLCKit 3.7.3 is subject to its VideoLAN LGPL-2.1 obligations. Check these licences and any linked dependencies before public distribution. The app is independently named and is not affiliated with IPTVnator, IMD TV or VideoLAN.
+- **Playlists → Import M3U from phone/computer** starts an opt-in local HTTP receiver on port `8877`. Visit the displayed LAN URL from a device on the same network, choose an M3U file and enter the six-digit PIN shown on Apple TV. The transfer is unencrypted HTTP on your LAN and should be used only on a trusted private network. The listener stops after one transfer or when you leave the Playlists page.
+- Local playlists (up to 8 MB) are stored in app support storage, not in UserDefaults. Refresh rereads the saved file. Existing URL/pasted M3U and playlist account editing remain available.
+- Move Up / Down controls reorder sources without changing their IDs; edit/refresh/remove remain available.
+
+### 7 — Dashboard and settings
+
+- Continue Watching rail for unfinished movies, plus existing Recent, Favorites, Movies, Series and source-management navigation. Source-provided posters and locally stored progress indicators appear on movie tiles.
+- Settings → Dashboard: startup screen selection, remember-last-channel replay when returning to Live TV, optional playlist refresh on launch. Settings → Data management: clear viewing history and clear watch progress.
+- Preserve the v0.2.6 single-line branding, playlist names, compact focus styling, EPG, inline/fullscreen modes and playback controls. Full visual parity with IPTVnator is **not** claimed.
+
+### 8 — KSPlayer evaluation
+
+- The optional experimental build links tagged KSPlayer `5.6.2`, whose Package.swift uses Swift tools 6.2. The default Xcode 16.4 build cannot compile that package, so its workflow uses macos-26 and Xcode 26.2.
+- Choose KSPlayer in Settings → Playback or in Now Playing → Player **only in the successful experimental build**. This is an evaluation of its video engine, not yet complete replacement of the existing UHF-style Now Playing overlay or parity with VLC controls.
+
+## First test sequence
+
+1. Confirm HD live playback, EPG and Siri Remote navigation work without regression.
+2. Try 4K/HDR streams in **Auto**, then manually with **AVPlayer** and **VLC**. If an app crash occurs, reopen and try the same channel; report whether the native recovery mode appears.
+3. Open a multi-audio stream: select each advertised audio option, then try **Restore default sound**. Report audio codec/language/engine if one remains silent.
+4. Open an existing movie, play for a minute, close and select Resume. Note the exact engine used.
+5. Import an M3U using the phone/computer transfer page; test refresh, rename and Up/Down reorder.
+6. Only after standard build testing, optionally run **Build KSPlayer tvOS IPA (experimental)** and provide the complete build log if it fails.
+
+## Testing completed here
+
+- Swift parser check on all app `.swift` files: passed.
+- Linux Swift type-check for the platform-independent `Models.swift` and `ViewingData.swift`: passed.
+- Local regression executable for M3U parsing, media type, 4K quality classification, resume bounds and time formatting: passed.
+- Project/workflow YAML parsed and ZIP CRC checked.
+- **Not performed:** full Xcode/tvOS SDK compilation; VLC/KSPlayer linking; testing live 4K/HDR streams; testing Siri Remote focus on a physical Apple TV; local network transfer on real tvOS. Do not assume these are proven until the GitHub Actions build and device test succeed.
+
+## Licensing and third-party services
+
+- Original IPTVnator v0.25.0 code snippets adapted here: MIT, copyright © 2019–2026 4gray. Respect its name/logo trademarks; this is not an official IPTVnator release. See `LICENSE.md`.
+- TVVLCKit 3.7.3 is subject to VideoLAN's LGPL-2.1 terms.
+- Optional KSPlayer 5.6.2 source and binaries are GPL-3.0, subject to its dependency licences. If distributing a combined KSPlayer build, assess and comply with all applicable open-source requirements. The normal AVPlayer/VLC build does not link KSPlayer.
+- IMD TV's GPL-3.0 EPG design was reviewed as a reference, but the bundled Swift EPG implementation is independent. Neither the app nor the build package includes external programme or channel data.

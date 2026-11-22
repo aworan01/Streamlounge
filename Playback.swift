@@ -11,7 +11,14 @@ import TVVLCKit
     @Published private(set) var status = "Select a channel."
     let native = AVPlayer()
     let vlc = VLCMediaPlayer()
+    #if canImport(KSPlayerUI) && canImport(KSPlayer)
+    let ksPlayer = KSPlayerBridge()
+    #endif
     private var active: Media?
+    var onProgress: ((Media,Double,Double)->Void)?
+    var resumePosition: Double = 0
+    private var resumed=false
+    private var lastProgress=Date.distantPast
     private var monitor: Task<Void,Never>?
     private var started = Date()
     @Published private(set) var paused = false
@@ -40,6 +47,16 @@ import TVVLCKit
         host.frame=container.bounds
         host.vlcView.isHidden = engine != "VLC"
         host.playerLayer.player = engine == "AVPlayer" ? native : nil
+        #if canImport(KSPlayerUI) && canImport(KSPlayer)
+        if engine == "KSPlayer" {
+            if ksPlayer.view.superview !== container {
+                ksPlayer.view.removeFromSuperview()
+                ksPlayer.view.frame=container.bounds
+                ksPlayer.view.autoresizingMask=[.flexibleWidth,.flexibleHeight]
+                container.addSubview(ksPlayer.view)
+            }
+        } else {ksPlayer.detach()}
+        #endif
         host.setNeedsLayout()
         host.layoutIfNeeded()
     }
@@ -51,7 +68,7 @@ import TVVLCKit
         if engine == "VLC" {
             vlc.drawable = nil
             vlc.drawable = host.vlcView
-        } else {
+        } else if engine == "AVPlayer" {
             host.playerLayer.player = nil
             host.playerLayer.player = native
         }
@@ -61,18 +78,37 @@ import TVVLCKit
     }
     private var options: UserDefaults { .standard }
     func start(_ item: Media, force: String? = nil) {
-        stop(); active=item; paused=false; retried=false
+        stop(); active=item; paused=false; retried=false;resumed=false
         let preference=force ?? options.string(forKey:"engine") ?? "Auto"
-        automatic = preference == "Auto"
-        let useVLC=preference == "VLC" || (preference == "Auto" && (item.name.localizedCaseInsensitiveContains("4K") || item.name.localizedCaseInsensitiveContains("UHD") || item.url.lowercased().contains(".mkv")))
+        let recovered=PlaybackCrashGuard.recovered(item)
+        automatic = preference == "Auto" && !recovered
+        // Prefer the system's hardware decoding for HLS UHD/HDR. VLC remains
+        // an explicit choice or an automatic fallback for incompatible streams.
+        let extensionHint=URL(string:item.url)?.pathExtension.lowercased() ?? ""
+        let useVLC = !recovered && (preference == "VLC" || (preference == "Auto" && ["mkv","avi","ts"].contains(extensionHint)))
+        if recovered {status="Previous playback stopped unexpectedly; using the native player for recovery."}
+        #if canImport(KSPlayerUI) && canImport(KSPlayer)
+        if preference == "KSPlayer", !recovered {launch("KSPlayer");return}
+        #endif
         launch(useVLC ? "VLC" : "AVPlayer")
     }
     private func launch(_ next: String) {
         guard let current=active,let url=httpURL(current.url) else {status="Invalid stream URL";return}
         monitor?.cancel();native.pause();native.replaceCurrentItem(with:nil);vlc.stop()
+        #if canImport(KSPlayerUI) && canImport(KSPlayer)
+        if engine == "KSPlayer" && next != "KSPlayer" {ksPlayer.close()}
+        #endif
         streamBitrate=nil;inputThroughput=nil;vlcSamples.removeAll()
         engine=next;started=Date();status="Opening with \(next)…";paused=false
+        PlaybackCrashGuard.mark(current.id,engine:next)
         let cache=options.object(forKey:"bufferSeconds") as? Double ?? 5
+        #if canImport(KSPlayerUI) && canImport(KSPlayer)
+        if next == "KSPlayer" {
+            ksPlayer.open(url)
+            status="KSPlayer experimental • Use its embedded controls. Audio and bitrate information may be unavailable."
+            return
+        }
+        #endif
         if next == "VLC" {
             let media=VLCMedia(url:url)
             media.addOption(":network-caching=\(Int(cache*1000))")
@@ -94,6 +130,7 @@ import TVVLCKit
         let elapsed=Date().timeIntervalSince(started)
         if engine == "AVPlayer" {
             guard let item=native.currentItem else{return}
+            if let original=active,original.kind != .live {sampleProgress()}
             let size=item.presentationSize
             let failed=item.status == .failed
             let ready=layer.isReadyForDisplay
@@ -107,12 +144,18 @@ import TVVLCKit
             streamBitrate=indicated.isFinite && indicated>0 ? indicated : nil
             inputThroughput=rate.isFinite && rate>0 ? rate : nil
             status=failed ? "AVPlayer error • Try VLC" : "AVPlayer • \(dimension) • \(ready ? "Video ready" : "Awaiting picture")\(rate>0 ? " • \(String(format:"%.1f",rate/1_000_000)) Mbps" : "")"
-        } else {
+        } else if engine == "VLC" {
+            if let original=active,original.kind != .live {sampleProgress()}
             let size=vlc.videoSize
             sampleVLCBitrate()
             status="VLC • \(size.width>0 ? "\(Int(size.width)) × \(Int(size.height))" : "Awaiting picture") • \(vlc.isPlaying ? "Playing" : "Opening / buffering")"
             // Do not repeatedly reconnect: a provider may allow only one concurrent stream.
             if elapsed>25 && size.width==0 { status += " • No video detected; try disabling hardware decoding in Settings." }
+        } else {
+            status="KSPlayer experimental • Use player controls to inspect track and decoder status."
+        }
+        if elapsed>30, let item=active,videoDimensions.width>0 {
+            PlaybackCrashGuard.clearRecovery(item)
         }
     }
     // VLC's demux byte counter is measured in bytes. A rolling delta gives
@@ -140,7 +183,7 @@ import TVVLCKit
     var bitrateDescription:String {formatRate(streamBitrate)}
     var throughputDescription:String {formatRate(inputThroughput)}
     private var videoDimensions:CGSize {
-        engine == "VLC" ? vlc.videoSize : (native.currentItem?.presentationSize ?? .zero)
+        engine == "VLC" ? vlc.videoSize : (engine == "AVPlayer" ? (native.currentItem?.presentationSize ?? .zero) : .zero)
     }
     var resolutionDescription:String {
         let size=videoDimensions
@@ -152,6 +195,30 @@ import TVVLCKit
         let size=videoDimensions
         return qualityTier(width:Double(size.width),height:Double(size.height))
     }
+    private func sampleProgress() {
+        guard let m=active, m.kind != .live else{return}
+        var time:Double=0,duration:Double=0
+        if engine == "KSPlayer" { return }
+        if engine == "VLC" {
+            // VLCTime values are milliseconds.
+            time=Double(vlc.time.intValue)/1000
+            duration=Double(vlc.media?.length.intValue ?? 0)/1000
+            if !resumed && resumePosition>30 && duration>0 && vlc.isPlaying {
+                vlc.position=Float(min(0.94,resumePosition/duration))
+                resumed=true
+            }
+        } else {
+            time=native.currentTime().seconds
+            duration=native.currentItem?.duration.seconds ?? 0
+            if !resumed && resumePosition>30 && duration.isFinite && duration>0 && native.currentItem?.status == .readyToPlay {
+                native.seek(to:CMTime(seconds:resumePosition,preferredTimescale:600))
+                resumed=true
+                return
+            }
+        }
+        guard time.isFinite,duration.isFinite,duration>0,time>=0 else{return}
+        if Date().timeIntervalSince(lastProgress)>5 {lastProgress=Date();onProgress?(m,time,duration)}
+    }
     struct Track: Identifiable { let id: Int32; let name: String; let selected: Bool }
     func tracks(_ kind:String) -> [Track] {
         if engine == "VLC" {
@@ -161,28 +228,69 @@ import TVVLCKit
             case "Audio": names = vlc.audioTrackNames as? [String] ?? []; indexes = vlc.audioTrackIndexes as? [NSNumber] ?? []; current = vlc.currentAudioTrackIndex
             default: names = vlc.videoTrackNames as? [String] ?? []; indexes = vlc.videoTrackIndexes as? [NSNumber] ?? []; current = vlc.currentVideoTrackIndex
             }
+            // A negative audio index represents Disabled. It must never be
+            // offered as a preferred language selection.
             return zip(indexes,names).filter{kind == "Subtitles" || $0.0.int32Value >= 0}.map{Track(id:$0.0.int32Value,name:$0.1,selected:$0.0.int32Value == current)}
         }
-        guard kind != "Quality", let item=native.currentItem, let group=item.asset.mediaSelectionGroup(forMediaCharacteristic: kind == "Subtitles" ? .legible : .audible) else{return []}
+        guard engine == "AVPlayer",kind != "Quality", let item=native.currentItem, let group=item.asset.mediaSelectionGroup(forMediaCharacteristic: kind == "Subtitles" ? .legible : .audible) else{return []}
         let selected=item.currentMediaSelection.selectedMediaOption(in:group)
         var result=group.options.enumerated().map{Track(id:Int32($0.offset),name:$0.element.displayName,selected:$0.element == selected)}
-        if group.allowsEmptySelection {result.insert(Track(id:-1,name:"Off",selected:selected == nil),at:0)}
+        if kind == "Subtitles" && group.allowsEmptySelection {result.insert(Track(id:-1,name:"Off",selected:selected == nil),at:0)}
         return result
     }
     func chooseTrack(_ kind:String,_ id:Int32) {
         if engine == "VLC" {
-            switch kind {case "Subtitles":vlc.currentVideoSubTitleIndex=id;case "Audio":vlc.currentAudioTrackIndex=id;default:vlc.currentVideoTrackIndex=id}
-        } else if let item=native.currentItem,let group=item.asset.mediaSelectionGroup(forMediaCharacteristic:kind == "Subtitles" ? .legible : .audible) {
-            if id == -1 && group.allowsEmptySelection {item.select(nil,in:group)} else if group.options.indices.contains(Int(id)){item.select(group.options[Int(id)],in:group)}
+            switch kind {
+            case "Subtitles":vlc.currentVideoSubTitleIndex=id
+            case "Audio":
+                let choices = vlc.audioTrackIndexes as? [NSNumber] ?? []
+                guard id >= 0,choices.contains(where:{$0.int32Value == id}) else {status="Audio track unavailable";return}
+                let old=vlc.currentAudioTrackIndex
+                vlc.currentAudioTrackIndex=id
+                if vlc.currentAudioTrackIndex != id {
+                    status="Audio track could not be selected; restored previous track."
+                    if old>=0 {vlc.currentAudioTrackIndex=old}
+                } else {status="Selected audio track; if silent, choose another supported track."}
+            default:vlc.currentVideoTrackIndex=id
+            }
+        } else if engine == "AVPlayer", let item=native.currentItem,let group=item.asset.mediaSelectionGroup(forMediaCharacteristic:kind == "Subtitles" ? .legible : .audible) {
+            if id == -1 && kind == "Subtitles" && group.allowsEmptySelection {item.select(nil,in:group)} else if id>=0 && group.options.indices.contains(Int(id)){item.select(group.options[Int(id)],in:group)}
         }
         objectWillChange.send()
     }
+    func restoreAudio() {
+        if engine == "VLC" {
+            if let first=(vlc.audioTrackIndexes as? [NSNumber])?.first(where:{$0.int32Value >= 0}) {
+                vlc.currentAudioTrackIndex=first.int32Value
+                status="Restored the first available audio track."
+            } else {status="VLC reports no available audio track; try AVPlayer."}
+        } else if engine == "AVPlayer",let current=native.currentItem,
+                  let group=current.asset.mediaSelectionGroup(forMediaCharacteristic:.audible) {
+            if let preferred=group.defaultOption ?? group.options.first {current.select(preferred,in:group);status="Restored the default audio track."}
+        } else {status="Use KSPlayer's built-in audio controls."}
+        objectWillChange.send()
+    }
     func setQualityCap(_ cap:Double){qualityCap=cap;native.currentItem?.preferredPeakBitRate=cap}
+    var playerChoices:[String] {
+        #if canImport(KSPlayerUI) && canImport(KSPlayer)
+        return ["Auto","AVPlayer","VLC","KSPlayer"]
+        #else
+        return ["Auto","AVPlayer","VLC"]
+        #endif
+    }
     func chooseEngine(_ name:String){guard let item=active else{return};start(item,force:name)}
     func reload(){guard active != nil else{return};launch(engine)}
     func switchEngine() {guard active != nil else{return};retried=true;launch(engine == "VLC" ? "AVPlayer" : "VLC")}
-    func togglePause() {guard active != nil else{return};paused.toggle();if engine == "VLC" {if paused{vlc.pause()}else{vlc.play()}}else{if paused{native.pause()}else{native.play()}};if paused{status="Paused • \(engine)"}}
-    func stop(){monitor?.cancel();monitor=nil;native.pause();native.replaceCurrentItem(with:nil);vlc.stop();active=nil;streamBitrate=nil;inputThroughput=nil;vlcSamples.removeAll();status="Stopped"}
+    func togglePause() {guard active != nil else{return};if engine == "KSPlayer" {status="Use KSPlayer's embedded playback controls.";return};paused.toggle();if engine == "VLC" {if paused{vlc.pause()}else{vlc.play()}}else if engine == "AVPlayer" {if paused{native.pause()}else{native.play()}};if paused{status="Paused • \(engine)"}}
+    func stop(){
+        if let item=active,item.kind != .live {sampleProgress()}
+        monitor?.cancel();monitor=nil;native.pause();native.replaceCurrentItem(with:nil);vlc.stop()
+        #if canImport(KSPlayerUI) && canImport(KSPlayer)
+        ksPlayer.close()
+        #endif
+        active=nil;streamBitrate=nil;inputThroughput=nil;vlcSamples.removeAll();status="Stopped"
+        PlaybackCrashGuard.clear()
+    }
 }
 final class VideoHost:UIView {
     override var canBecomeFocused:Bool { false }
@@ -200,11 +308,12 @@ struct PlayerSurface:UIViewRepresentable {
     func makeUIView(context:Context)->UIView {
         let container=UIView(frame:.zero)
         container.backgroundColor = .black
-        container.isUserInteractionEnabled=false
+        container.isUserInteractionEnabled=session.engine == "KSPlayer"
         session.mountVideo(in:container)
         return container
     }
     func updateUIView(_ container:UIView,context:Context) {
+        container.isUserInteractionEnabled=session.engine == "KSPlayer"
         session.mountVideo(in:container)
     }
 }
@@ -255,7 +364,7 @@ struct FullPlayer:View {
     var body:some View {
         ZStack(alignment:.bottom) {
             Color.black.ignoresSafeArea()
-            PlayerSurface(session:session).frame(maxWidth:.infinity,maxHeight:.infinity).ignoresSafeArea().allowsHitTesting(false)
+            PlayerSurface(session:session).frame(maxWidth:.infinity,maxHeight:.infinity).ignoresSafeArea().allowsHitTesting(session.engine == "KSPlayer")
             if visible {
                 VStack(alignment:.leading,spacing:10) {
                     HStack(alignment:.top){VStack(alignment:.leading,spacing:5){Text(item.name).font(.system(size:38,weight:.semibold)).lineLimit(nil).fixedSize(horizontal:false,vertical:true);Text(sourceName+"  •  "+item.group).font(.system(size:23)).foregroundStyle(.secondary)};Spacer();if item.kind == .live {Text("LIVE").font(.system(size:20,weight:.bold)).padding(10).background(Color.red.opacity(0.8),in:RoundedRectangle(cornerRadius:6))}}
@@ -263,7 +372,7 @@ struct FullPlayer:View {
                     if item.kind != .live && session.engine == "AVPlayer" { HStack{ control("back15","gobackward.15","−15s"){seek(-15)};control("forward15","goforward.15","+15s"){seek(15)};Spacer()} }
                     HStack(spacing:8) {
                         control("prev","backward.end.fill","Previous",enabled:index.map{$0>0} ?? false){step(-1)}
-                        control("pause",session.paused ? "play.fill" : "pause.fill",session.paused ? "Play" : "Pause"){session.togglePause()}
+                        control("pause",session.paused ? "play.fill" : "pause.fill",session.paused ? "Play" : "Pause",enabled:session.engine != "KSPlayer"){session.togglePause()}
                         control("next","forward.end.fill","Next",enabled:index.map{$0+1<sequence.count} ?? false){step(1)}
                         control("channels","list.bullet","Channels",enabled:item.kind == .live && !channelPlaylists.isEmpty){open("Channels")}
                         control("source","rectangle.2.swap","Source"){open("Source")}
@@ -446,6 +555,7 @@ struct FullPlayer:View {
                     if alternatives.count == 1 {Text("No matching alternative source in imported playlists.").font(.system(size:22)).foregroundStyle(.secondary)}
                     ForEach(alternatives){m in option("source-"+m.id,(library.sources.first{$0.id==m.sourceID}?.name ?? "Source")+" — "+m.name,chosen:m.id==item.id){if m.id != item.id {onSelect(m)};closePanel()}}
                 case "Audio","Subtitles":
+                    if name == "Audio" {option("restoreAudio","Restore default sound"){session.restoreAudio()}}
                     let tracks=session.tracks(name)
                     if tracks.isEmpty {Text("No selectable tracks reported by this player.").font(.system(size:22)).foregroundStyle(.secondary)}
                     ForEach(tracks){t in option("track-"+String(t.id),t.name,chosen:t.selected){session.chooseTrack(name,t.id)}}
@@ -460,14 +570,16 @@ struct FullPlayer:View {
                         ForEach(session.tracks("Quality")){t in option("video-"+String(t.id),t.name,chosen:t.selected){session.chooseTrack("Quality",t.id)}}
                     }
                 case "Player":
-                    ForEach(["Auto","AVPlayer","VLC"],id:\.self){engine in option("engine-"+engine,engine,chosen:session.engine==engine){session.chooseEngine(engine)}}
+                    ForEach(session.playerChoices,id:\.self){engine in option("engine-"+engine,engine,chosen:session.engine==engine){session.chooseEngine(engine)}}
                     option("videoOutput","Reconnect video output"){session.reconnectVideoOutput()}
                     option("reload","Reload stream"){session.reload()}
+                    if session.engine == "KSPlayer" {Text("KSPlayer is experimental. Track selection and resume controls are managed by the embedded KSPlayer interface, not the VLC toolbar.").font(.caption).foregroundStyle(.secondary)}
                 default:
                     Text(item.name).font(.system(size:27,weight:.semibold));Text("Playlist: "+sourceName);Text("Category: "+item.group);Text("Engine: "+session.engine)
                     Text("Video quality: "+session.qualityLabel)
                     Text("Resolution: "+session.resolutionDescription)
                     Text("Video surface: "+session.videoOutputDescription)
+                    if PlaybackCrashGuard.recovered(item) {Text("Recovery mode: a previous playback session stopped unexpectedly. Try AVPlayer first.").foregroundStyle(.yellow)}
                     Text((session.engine == "VLC" ? "Bitrate (estimated): " : "Stream bitrate: ")+session.bitrateDescription)
                     if session.engine == "AVPlayer" {Text("Download throughput: "+session.throughputDescription)}
                     Text(session.status);if let host=httpURL(item.url)?.host {Text("Server: "+host)}
@@ -483,6 +595,11 @@ struct Playback:View {
     @StateObject private var session=PlaybackSession()
     @State private var current:Media?
     var body:some View {
-        FullPlayer(item:current ?? item,session:session,library:library,channels:library.media.filter{$0.kind == item.kind},onSelect:{m in current=m;library.watched(m);session.start(m)},onClose:{dismiss()}).onAppear{session.start(item)}.onDisappear{session.stop()}
+        FullPlayer(item:current ?? item,session:session,library:library,channels:library.media.filter{$0.kind == item.kind},onSelect:{m in current=m;library.watched(m);session.resumePosition=playbackResumeTime(library.bookmark(for:m));session.start(m)},onClose:{dismiss()})
+            .onAppear{
+                session.onProgress={media,time,duration in library.record(media,seconds:time,duration:duration)}
+                session.resumePosition=playbackResumeTime(library.bookmark(for:item))
+                session.start(item)
+            }.onDisappear{session.stop()}
     }
 }

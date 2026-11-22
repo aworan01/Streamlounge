@@ -4,12 +4,15 @@ struct SettingsView:View {
     @ObservedObject var library:Library
     var entryFocus:FocusState<HomeFocus?>.Binding
     @AppStorage("textDensity") private var textDensity="Compact"
-    private let sections=["Playback","Appearance","EPG / TV Guide","Data management","About"]
+    private let sections=["Playback","Appearance","Dashboard","EPG / TV Guide","Data management","About"]
     private func enter(_ name:String){section=name;Task{@MainActor in await Task.yield();entryFocus.wrappedValue = .settingsOption}}
     @AppStorage("engine") private var engine="Auto"
     @AppStorage("hardware") private var hardware=true
     @AppStorage("bufferSeconds") private var buffer:Double=5
     @AppStorage("appearance") private var appearance="Night Owl"
+    @AppStorage("startPage") private var startPage="Dashboard"
+    @AppStorage("rememberLastChannel") private var rememberLastChannel=true
+    @AppStorage("autoRefreshPlaylists") private var autoRefreshPlaylists=false
     @State private var section="Playback"
     @State private var clearHistory=false
     var body:some View {
@@ -28,8 +31,18 @@ struct SettingsView:View {
             ScrollView { VStack(alignment:.leading,spacing:26){Text(section).font(.title2.bold())
                 switch section {
                 case "Playback":
-                    Picker("Player engine",selection:$engine){ForEach(["Auto","AVPlayer","VLC"],id:\.self){Text($0).tag($0)}}.focused(entryFocus,equals:.settingsOption)
-                    Text("Auto selects VLC for named 4K/UHD streams or MKV, and falls back to VLC if AVPlayer fails to display video within 15 seconds. Manual selection overrides this.").font(.caption).foregroundStyle(.secondary)
+                    Picker("Player engine",selection:$engine){
+                        ForEach(["Auto","AVPlayer","VLC"],id:\.self){Text($0).tag($0)}
+                        #if canImport(KSPlayerUI) && canImport(KSPlayer)
+                        Text("KSPlayer (experimental)").tag("KSPlayer")
+                        #endif
+                    }.focused(entryFocus,equals:.settingsOption)
+                    .onAppear {
+                        #if !canImport(KSPlayerUI)
+                        if engine == "KSPlayer" {engine="Auto"}
+                        #endif
+                    }
+                    Text("Auto starts 4K/HDR HLS streams with the native AVPlayer decoder; VLC is reserved for incompatible containers or as fallback. If a stream crashed recently, native recovery mode is selected next launch.").font(.caption).foregroundStyle(.secondary)
                     Toggle("VLC hardware decoding",isOn:$hardware)
                     Text("If a UHD stream has sound but no picture, try disabling VLC hardware decoding and reopening it. Software decoding may be too demanding for some Apple TVs.").font(.caption).foregroundStyle(.secondary)
                     Picker("Buffer duration",selection:$buffer){ForEach([2.0,5.0,10.0,20.0],id:\.self){Text("\(Int($0)) seconds").tag($0)}}
@@ -37,10 +50,15 @@ struct SettingsView:View {
                 case "Appearance":Picker("Theme",selection:$appearance){ForEach(["Night Owl","Black OLED"],id:\.self){Text($0).tag($0)}}.focused(entryFocus,equals:.settingsOption)
                     Picker("Text size",selection:$textDensity){ForEach(["Compact","Standard","Large"],id:\.self){Text($0).tag($0)}}
                     Text("Compact reduces sidebar and live channel text. Long channel names wrap instead of being cut off.").font(.caption).foregroundStyle(.secondary)
+                case "Dashboard":
+                    Picker("Start page",selection:$startPage){ForEach(["Dashboard","Live TV","Movies","Series","Favorites"],id:\.self){Text($0).tag($0)}}.focused(entryFocus,equals:.settingsOption)
+                    Toggle("Remember last channel",isOn:$rememberLastChannel)
+                    Toggle("Refresh playlists when app launches",isOn:$autoRefreshPlaylists)
+                    Text("Automatic refresh uses the current playlist URL and retains existing favorite IDs when the source entries remain identical.").font(.caption).foregroundStyle(.secondary)
                 case "EPG / TV Guide":
                     EPGSettingsPanel(library:library,entryFocus:entryFocus)
-                case "Data management":Button("Clear viewing history"){clearHistory=true}.focused(entryFocus,equals:.settingsOption);Text("Playlists and favorites are retained. Catalogs are stored in tvOS cache and may need refreshing after system cleanup.").font(.caption).foregroundStyle(.secondary)
-                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.2.5");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
+                case "Data management":Button("Clear viewing history"){clearHistory=true}.focused(entryFocus,equals:.settingsOption);Button("Clear watch progress"){library.forgetProgress()};Text("Playlists and favorites are retained. Watch progress and metadata are stored locally.").font(.caption).foregroundStyle(.secondary)
+                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.3.0");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth:.infinity,alignment:.leading).padding(16) }.frame(maxHeight:.infinity,alignment:.topLeading).focusSection()
         }.alert("Clear viewing history?",isPresented:$clearHistory){Button("Clear",role:.destructive){library.history=[];library.save()};Button("Cancel",role:.cancel){}}

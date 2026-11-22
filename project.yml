@@ -6,19 +6,23 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '0.2.6'
-    CURRENT_PROJECT_VERSION: '8'
+    MARKETING_VERSION: 0.3.0
+    CURRENT_PROJECT_VERSION: '9'
 targets:
   StreamLoungeTV:
     type: application
     platform: tvOS
     sources:
-      - App.swift
-      - Models.swift
-      - Playback.swift
-      - Settings.swift
-      - EPG.swift
-      - GuideUI.swift
+    - App.swift
+    - Models.swift
+    - Playback.swift
+    - Settings.swift
+    - EPG.swift
+    - GuideUI.swift
+    - ViewingData.swift
+    - LocalM3UServer.swift
+    - MovieDetailsView.swift
+    - KSPlayerBridge.swift
     info:
       path: Info.plist
       properties:
@@ -26,7 +30,8 @@ targets:
         UILaunchScreen: {}
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        NSLocalNetworkUsageDescription: Connect to playlist and streaming servers on your local network.
+        NSLocalNetworkUsageDescription: Connect to playlist and streaming servers
+          on your local network.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.streamlounge.tv
