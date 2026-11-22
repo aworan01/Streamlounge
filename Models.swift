@@ -21,6 +21,16 @@ struct Programme: Identifiable, Codable {
     var id: String { channel + start.description + title }
     var channel: String; var start: Date; var end: Date; var title: String; var detail: String = ""
 }
+/// Human-readable picture class from the decoder-reported raster size.
+/// Streaming bitrate / the text "4K" in a channel name cannot establish quality.
+func qualityTier(width:Double,height:Double)->String {
+    guard width.isFinite,height.isFinite,width>0,height>0 else {return "—"}
+    let longer=max(width,height),shorter=min(width,height)
+    if longer>=3800 || shorter>=2100 {return "4K"}
+    if longer>=1900 || shorter>=1000 {return "FHD"}
+    if longer>=1250 || shorter>=700 {return "HD"}
+    return "SD"
+}
 enum StreamFailure: LocalizedError {
     case invalidURL, empty, badResponse, invalidData
     var errorDescription: String? { switch self { case .invalidURL: return "Enter a valid HTTP or HTTPS URL."; case .empty: return "No playable entries found."; case .badResponse: return "The provider rejected the request or returned an error."; case .invalidData: return "The provider returned an unexpected format." } }

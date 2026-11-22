@@ -102,9 +102,18 @@ import TVVLCKit
     }
     var bitrateDescription:String {formatRate(streamBitrate)}
     var throughputDescription:String {formatRate(inputThroughput)}
+    private var videoDimensions:CGSize {
+        engine == "VLC" ? vlc.videoSize : (native.currentItem?.presentationSize ?? .zero)
+    }
     var resolutionDescription:String {
-        let size=engine == "VLC" ? vlc.videoSize : (native.currentItem?.presentationSize ?? .zero)
+        let size=videoDimensions
         return size.width>0 && size.height>0 ? "\(Int(size.width)) × \(Int(size.height))" : "Unavailable"
+    }
+    /// Actual decoder-reported pixel dimensions, never a fixed channel-name label.
+    /// Until a frame is decoded, display — rather than incorrectly claiming 4K.
+    var qualityLabel:String {
+        let size=videoDimensions
+        return qualityTier(width:Double(size.width),height:Double(size.height))
     }
     struct Track: Identifiable { let id: Int32; let name: String; let selected: Bool }
     func tracks(_ kind:String) -> [Track] {
@@ -170,12 +179,32 @@ struct FullPlayer:View {
     @State private var visible=true
     @State private var panel:String?=nil
     @State private var returnFocus="pause"
+    @State private var channelSourceID=""
+    @State private var channelGroup="All groups"
     @FocusState private var focus:String?
     private var sourceName:String {library.sources.first{$0.id==item.sourceID}?.name ?? "Unknown source"}
     private var alternatives:[Media] {
         [item]+library.media.filter { $0.id != item.id && $0.kind == item.kind && (($0.name.caseInsensitiveCompare(item.name) == .orderedSame) || (!item.tvg.isEmpty && $0.tvg == item.tvg)) }
     }
-    private var index:Int? {channels.firstIndex{$0.id==item.id}}
+    // Up/Down steps are always within the current playlist, not the concatenated
+    // list of every imported IPTV source.
+    private var sequence:[Media] {channels.filter{$0.sourceID == item.sourceID && $0.kind == item.kind}}
+    private var index:Int? {sequence.firstIndex{$0.id==item.id}}
+    private var channelPlaylists:[Source] {
+        library.sources.filter { source in
+            channels.contains(where:{$0.sourceID == source.id && $0.kind == .live})
+        }
+    }
+    private var channelsInPlaylist:[Media] {
+        let selectedID=UUID(uuidString:channelSourceID) ?? item.sourceID
+        return channels.filter{$0.sourceID == selectedID && $0.kind == .live}
+    }
+    private var channelGroups:[String] {
+        ["All groups"] + Array(Set(channelsInPlaylist.map(\.group))).sorted()
+    }
+    private var visibleChannels:[Media] {
+        channelsInPlaylist.filter{channelGroup == "All groups" || $0.group == channelGroup}
+    }
     var body:some View {
         ZStack(alignment:.bottom) {
             Color.black.ignoresSafeArea()
@@ -188,13 +217,13 @@ struct FullPlayer:View {
                     HStack(spacing:8) {
                         control("prev","backward.end.fill","Previous",enabled:index.map{$0>0} ?? false){step(-1)}
                         control("pause",session.paused ? "play.fill" : "pause.fill",session.paused ? "Play" : "Pause"){session.togglePause()}
-                        control("next","forward.end.fill","Next",enabled:index.map{$0+1<channels.count} ?? false){step(1)}
-                        control("channels","list.bullet","Channels",enabled:!channels.isEmpty){open("Channels")}
+                        control("next","forward.end.fill","Next",enabled:index.map{$0+1<sequence.count} ?? false){step(1)}
+                        control("channels","list.bullet","Channels",enabled:item.kind == .live && !channelPlaylists.isEmpty){open("Channels")}
                         control("source","rectangle.2.swap","Source"){open("Source")}
                         control("favorite",library.favorites.contains(item.id) ? "star.fill" : "star","Favourite"){library.toggle(item)}
                         control("audio","speaker.wave.2","Audio"){open("Audio")}
                         control("subs","captions.bubble","Subtitles"){open("Subtitles")}
-                        control("quality","4k.tv","Quality"){open("Quality")}
+                        control("quality","tv","Quality",badge:session.qualityLabel){open("Quality")}
                         control("info","info.circle","Info"){open("Info")}
                         control("engine","gearshape","Player"){open("Player")}
                         control("hide","chevron.down","Hide"){hide()}
@@ -212,24 +241,46 @@ struct FullPlayer:View {
                     .onMoveCommand{_ in show()}
                     .padding(12)
             }
-            if let pane=panel { panelView(pane) }
+            if let pane=panel {
+                if pane == "Channels" {channelBrowser} else {panelView(pane)}
+            }
         }.frame(maxWidth:.infinity,maxHeight:.infinity).background(.black)
         .onAppear { assignFocus("pause") }
+        .onChange(of:item.id){_ in
+            if panel == "Channels" {
+                channelSourceID=item.sourceID.uuidString
+                channelGroup=item.group
+                assignFocus("channel-"+item.id)
+            }
+        }
         .onPlayPauseCommand{session.togglePause()}
         .onExitCommand{if panel != nil {closePanel()} else if visible {hide()} else {onClose()}}
     }
     private func assignFocus(_ key:String){Task{@MainActor in await Task.yield();focus=key}}
     private func show(){visible=true;assignFocus("pause")}
     private func hide(){panel=nil;visible=false;assignFocus("wake")}
-    private func open(_ name:String){returnFocus=focus ?? "pause";panel=name;assignFocus("panelClose")}
+    private func open(_ name:String){
+        returnFocus=focus ?? "pause"
+        if name == "Channels" {
+            channelSourceID=item.sourceID.uuidString
+            channelGroup=item.group
+        }
+        panel=name
+        assignFocus("panelClose")
+    }
     private func closePanel(){panel=nil;assignFocus(returnFocus)}
-    private func step(_ delta:Int){if let i=index,channels.indices.contains(i+delta){onSelect(channels[i+delta])}}
+    private func step(_ delta:Int){if let i=index,sequence.indices.contains(i+delta){onSelect(sequence[i+delta])}}
     private func seek(_ delta:Double){let t=session.native.currentTime().seconds;guard t.isFinite else{return};session.native.seek(to:CMTime(seconds:max(0,t+delta),preferredTimescale:600))}
-    private func control(_ key:String,_ icon:String,_ title:String,enabled:Bool=true,action:@escaping ()->Void)->some View {
+    private func control(_ key:String,_ icon:String,_ title:String,enabled:Bool=true,badge:String?=nil,action:@escaping ()->Void)->some View {
         Button(action:action) {
             VStack(spacing:5) {
-                Image(systemName:icon)
-                    .font(.system(size:27,weight:.medium))
+                Group {
+                    if let badge=badge {
+                        Text(badge).font(.system(size:22,weight:.bold)).lineLimit(1).minimumScaleFactor(0.7)
+                    } else {
+                        Image(systemName:icon).font(.system(size:27,weight:.medium))
+                    }
+                }
                     .foregroundStyle(focus == key ? Color.cyan : Color.white)
                     .frame(width:56,height:48)
                     .background(RoundedRectangle(cornerRadius:9).fill(focus == key ? Color.cyan.opacity(0.18) : Color.black.opacity(0.32)))
@@ -254,6 +305,90 @@ struct FullPlayer:View {
         }.buttonStyle(ManualFocusStyle()).focused($focus,equals:key)
     }
 
+    /// Two-column channel browser. Initial scroll/focus tracks the actual playing
+    /// item, with playlist and group choices accessible from the left column.
+    private var channelBrowser:some View {
+        HStack {
+            Spacer(minLength:0)
+            VStack(alignment:.leading,spacing:14) {
+                HStack {
+                    Text("Channels").font(.system(size:36,weight:.bold))
+                    Spacer()
+                    option("panelClose","Back to video controls"){closePanel()}
+                        .frame(width:290)
+                }
+                HStack(alignment:.top,spacing:16) {
+                    VStack(alignment:.leading,spacing:9) {
+                        Text("Playlists").font(.system(size:21,weight:.semibold)).foregroundStyle(.secondary)
+                        ScrollView {
+                            LazyVStack(alignment:.leading,spacing:5) {
+                                ForEach(channelPlaylists){source in
+                                    option("playlist-"+source.id.uuidString,source.name,chosen:source.id.uuidString == channelSourceID) {
+                                        channelSourceID=source.id.uuidString
+                                        channelGroup="All groups"
+                                    }
+                                }
+                            }
+                        }.frame(maxHeight:200)
+                        Text("Groups").font(.system(size:21,weight:.semibold)).foregroundStyle(.secondary)
+                        ScrollView {
+                            LazyVStack(alignment:.leading,spacing:5) {
+                                ForEach(channelGroups,id:\.self){group in
+                                    option("group-"+group,group,chosen:channelGroup == group) {
+                                        channelGroup=group
+                                    }
+                                }
+                            }
+                        }
+                    }.frame(width:290).focusSection()
+                    VStack(alignment:.leading,spacing:9) {
+                        Text("\(visibleChannels.count) channels • \(channelGroup)")
+                            .font(.system(size:20)).foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        ScrollViewReader {proxy in
+                            ScrollView {
+                                LazyVStack(alignment:.leading,spacing:6) {
+                                    ForEach(visibleChannels){channel in
+                                        option("channel-"+channel.id,channel.name,chosen:channel.id == item.id) {
+                                            onSelect(channel)
+                                            closePanel()
+                                        }
+                                        .id(channel.id)
+                                    }
+                                }
+                            }
+                            .onAppear {
+                                Task { @MainActor in
+                                    await Task.yield()
+                                    if visibleChannels.contains(where:{$0.id == item.id}) {
+                                        proxy.scrollTo(item.id,anchor:.center)
+                                        focus="channel-"+item.id
+                                    } else if let first=visibleChannels.first {
+                                        proxy.scrollTo(first.id,anchor:.top)
+                                    }
+                                }
+                            }
+                            .onChange(of:channelGroup){_ in
+                                if let first=visibleChannels.first {
+                                    proxy.scrollTo(first.id,anchor:.top)
+                                }
+                            }
+                            .onChange(of:channelSourceID){_ in
+                                if let first=visibleChannels.first {
+                                    proxy.scrollTo(first.id,anchor:.top)
+                                }
+                            }
+                        }
+                    }.frame(maxWidth:.infinity).focusSection()
+                }.frame(maxHeight:.infinity)
+            }
+            .padding(30)
+            .frame(width:1060)
+            .frame(maxHeight:.infinity,alignment:.topLeading)
+            .background(Color(red:0.08,green:0.10,blue:0.15))
+        }.frame(maxWidth:.infinity,maxHeight:.infinity)
+    }
+
     private func panelView(_ name:String)->some View {
         HStack {Spacer();VStack(alignment:.leading,spacing:14){
             Text(name).font(.system(size:36,weight:.bold))
@@ -263,14 +398,13 @@ struct FullPlayer:View {
                 case "Source":
                     if alternatives.count == 1 {Text("No matching alternative source in imported playlists.").font(.system(size:22)).foregroundStyle(.secondary)}
                     ForEach(alternatives){m in option("source-"+m.id,(library.sources.first{$0.id==m.sourceID}?.name ?? "Source")+" — "+m.name,chosen:m.id==item.id){if m.id != item.id {onSelect(m)};closePanel()}}
-                case "Channels":
-                    ForEach(channels){m in option("channel-"+m.id,m.name,chosen:m.id==item.id){onSelect(m);closePanel()}}
                 case "Audio","Subtitles":
                     let tracks=session.tracks(name)
                     if tracks.isEmpty {Text("No selectable tracks reported by this player.").font(.system(size:22)).foregroundStyle(.secondary)}
                     ForEach(tracks){t in option("track-"+String(t.id),t.name,chosen:t.selected){session.chooseTrack(name,t.id)}}
                 case "Quality":
-                    Text(session.status).font(.system(size:22)).foregroundStyle(.secondary)
+                    Text("Detected quality: "+session.qualityLabel+" • "+session.resolutionDescription).font(.system(size:22)).foregroundStyle(.secondary)
+                    Text(session.status).font(.system(size:20)).foregroundStyle(.secondary)
                     if session.engine == "AVPlayer" {
                         Text("Adaptive stream bitrate limit (not a fixed resolution). Original removes the cap.").font(.system(size:20)).foregroundStyle(.secondary)
                         ForEach([0.0,3_000_000,6_000_000,12_000_000,25_000_000],id:\.self){cap in option("cap-"+String(cap),cap==0 ? "Original / Auto" : "Up to \(Int(cap/1_000_000)) Mbps",chosen:session.qualityCap==cap){session.setQualityCap(cap)}}
@@ -283,6 +417,7 @@ struct FullPlayer:View {
                     option("reload","Reload stream"){session.reload()}
                 default:
                     Text(item.name).font(.system(size:27,weight:.semibold));Text("Playlist: "+sourceName);Text("Category: "+item.group);Text("Engine: "+session.engine)
+                    Text("Video quality: "+session.qualityLabel)
                     Text("Resolution: "+session.resolutionDescription)
                     Text((session.engine == "VLC" ? "Bitrate (estimated): " : "Stream bitrate: ")+session.bitrateDescription)
                     if session.engine == "AVPlayer" {Text("Download throughput: "+session.throughputDescription)}
@@ -299,6 +434,6 @@ struct Playback:View {
     @StateObject private var session=PlaybackSession()
     @State private var current:Media?
     var body:some View {
-        FullPlayer(item:current ?? item,session:session,library:library,channels:[],onSelect:{m in current=m;library.watched(m);session.start(m)},onClose:{dismiss()}).onAppear{session.start(item)}.onDisappear{session.stop()}
+        FullPlayer(item:current ?? item,session:session,library:library,channels:library.media.filter{$0.kind == item.kind},onSelect:{m in current=m;library.watched(m);session.start(m)},onClose:{dismiss()}).onAppear{session.start(item)}.onDisappear{session.stop()}
     }
 }

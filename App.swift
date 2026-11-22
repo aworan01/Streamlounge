@@ -197,9 +197,13 @@ struct Home:View {
                                     .overlay(RoundedRectangle(cornerRadius:8).strokeBorder(homeFocus == .nav(p) ? Color.cyan : Color.clear,lineWidth:2))
                             }.buttonStyle(ManualFocusStyle()).focused($homeFocus,equals:.nav(p))
                         }
-                    }.onMoveCommand(perform: moveSidebar)
+                    }.onMoveCommand { direction in
+                        // Let the tvOS focus engine handle Up/Down. Doing both
+                        // automatic navigation and manual focus moves skipped rows.
+                        if direction == .right { moveSidebarRight() }
+                    }
                     Spacer(minLength:0)
-                    Text("v0.2.4").font(.system(size:19)).foregroundStyle(.secondary)
+                    Text("v0.2.5").font(.system(size:19)).foregroundStyle(.secondary)
                 }.padding(18).frame(width:300).frame(maxHeight:.infinity,alignment:.topLeading).focusSection().background(Color.white.opacity(0.045))
             }
             VStack(alignment:.leading,spacing:14) {
@@ -219,7 +223,13 @@ struct Home:View {
         }.onChange(of:scenePhase){phase in if phase == .active {Task{await library.refreshAllGuides()}}}
         .fullScreenCover(item:$play){item in Playback(item:item,library:library)}
         .sheet(item:$details){item in SeriesView(item:item,library:library)}
-        .sheet(item:$guideItem){item in GuideView(item:item,library:library)}
+        .sheet(item:$guideItem){item in
+            GuideView(item:item,library:library,onPlay:{channel in
+                guideItem=nil
+                openPage(.live,enter:false)
+                selectChannel(channel)
+            })
+        }
         .sheet(item:$editor){s in SourceEditor(library:library,source:s)}
         .sheet(isPresented:$add){SourceEditor(library:library,source:Source(name:"",address:"",type:"M3U URL"))}
         .alert("Remove source?",isPresented:Binding(get:{removeSource != nil},set:{if !$0 {removeSource=nil}})){Button("Remove",role:.destructive){if let s=removeSource{library.remove(s)};removeSource=nil};Button("Cancel",role:.cancel){removeSource=nil}}
@@ -228,24 +238,51 @@ struct Home:View {
         if p != page {playback.stop(); selected=nil; filter="All groups";sourceFilter="All sources";query="";page=p}
         if enter { Task { @MainActor in await Task.yield(); homeFocus = .content } }
     }
-    private func moveSidebar(_ direction:MoveCommandDirection) {
-        guard case let .nav(p)? = homeFocus, let i=Page.allCases.firstIndex(of:p) else{return}
-        switch direction {
-        case .right:openPage(p,enter:true)
-        case .up:if i>0 {homeFocus = .nav(Page.allCases[i-1])}
-        case .down:if i+1<Page.allCases.count {homeFocus = .nav(Page.allCases[i+1])}
-        default:break
-        }
+    private func moveSidebarRight() {
+        guard case let .nav(p)? = homeFocus else {return}
+        openPage(p,enter:true)
     }
     private var backgroundColor:Color { appearance == "Black OLED" ? .black : Color(red:0.055,green:0.075,blue:0.12) }
     private func pageIcon(_ p:Page)->String { switch p {case .home:return "house";case .live:return "tv";case .guide:return "calendar";case .movies:return "film";case .series:return "play.rectangle.on.rectangle";case .favorites:return "star";case .history:return "clock";case .sources:return "list.bullet";case .settings:return "gearshape"} }
     private func selectChannel(_ item:Media) { selected=item;library.watched(item);playback.start(item) }
+    private var currentPlaylistName:String {
+        guard sourceFilter != "All sources",let id=UUID(uuidString:sourceFilter) else{return "All playlists"}
+        return library.sources.first(where:{$0.id==id})?.name ?? "All playlists"
+    }
     private var channelFilters:some View {
         VStack(alignment:.leading,spacing:10) {
-            Picker("Source",selection:$sourceFilter){Text("All sources").tag("All sources");ForEach(library.sources){s in Text(s.name).tag(s.id.uuidString)}}.font(.system(size:labelSize)).onChange(of:sourceFilter){_ in filter="All groups"}.focused($homeFocus,equals:.content)
-            Text("Categories").font(.caption).foregroundStyle(.secondary)
-            ScrollView {LazyVStack(alignment:.leading,spacing:12){ForEach(["All groups"]+groups,id:\.self){g in Button {filter=g} label:{Text(g).font(.system(size:labelSize)).lineLimit(1).minimumScaleFactor(0.65).frame(maxWidth:.infinity,alignment:.leading).foregroundStyle(filter == g ? Color.cyan : Color.primary)}}.padding(8)}}
-        }.frame(width:235).frame(maxHeight:.infinity,alignment:.top).focusSection()
+            Text("Playlist").font(.system(size:20,weight:.semibold)).lineLimit(1)
+            Picker("Choose playlist",selection:$sourceFilter) {
+                Text("All playlists").tag("All sources")
+                ForEach(library.sources){s in Text(s.name).tag(s.id.uuidString)}
+            }
+            .font(.system(size:18))
+            .onChange(of:sourceFilter){_ in filter="All groups"}
+            .focused($homeFocus,equals:.content)
+            Text(currentPlaylistName)
+                .font(.system(size:18,weight:.medium))
+                .foregroundStyle(.cyan)
+                .lineLimit(nil)
+                .fixedSize(horizontal:false,vertical:true)
+                .frame(maxWidth:.infinity,alignment:.leading)
+                .accessibilityLabel("Selected playlist: " + currentPlaylistName)
+            Text("Categories").font(.system(size:20,weight:.semibold)).foregroundStyle(.secondary)
+            ScrollView {
+                LazyVStack(alignment:.leading,spacing:12) {
+                    ForEach(["All groups"]+groups,id:\.self) { g in
+                        Button {filter=g} label: {
+                            Text(g)
+                                .font(.system(size:min(21,labelSize)))
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.75)
+                                .frame(maxWidth:.infinity,alignment:.leading)
+                                .foregroundStyle(filter == g ? Color.cyan : Color.primary)
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+        }.frame(width:290).frame(maxHeight:.infinity,alignment:.top).focusSection()
     }
     private var liveView:some View {
         HStack(alignment:.top,spacing:16) {
@@ -266,7 +303,7 @@ struct Home:View {
             VStack(alignment:.leading,spacing:12) {
                 if let item=selected {
                     if expanded {
-                        FullPlayer(item:item,session:playback,library:library,channels:shown,onSelect:{selectChannel($0)},onClose:{expanded=false;Task{@MainActor in await Task.yield();homeFocus = .channel(item.id)}})
+                        FullPlayer(item:item,session:playback,library:library,channels:library.media.filter{$0.kind == .live},onSelect:{selectChannel($0)},onClose:{expanded=false;Task{@MainActor in await Task.yield();homeFocus = .channel(item.id)}})
                     } else {
                         PlayerSurface(session:playback).aspectRatio(16/9,contentMode:.fit).frame(maxWidth:.infinity,maxHeight:500).background(.black)
                         Text(item.name).font(.system(size:labelSize+4,weight:.semibold)).lineLimit(nil).fixedSize(horizontal:false,vertical:true)
@@ -283,8 +320,13 @@ struct Home:View {
         let programmes=library.programmes(item,after:Date())
         return VStack(alignment:.leading,spacing:10){HStack{Text("Programme guide").font(.headline);Spacer();Button("Refresh guide"){if let s=library.sources.first(where:{$0.id==item.sourceID}){Task{await library.loadGuide(s)}}}.font(.caption2).disabled(library.epgBusy)};if programmes.isEmpty{Text("No matched schedule. Check EPG settings or refresh the guide.").font(.caption).foregroundStyle(.secondary)}else{ScrollView(.horizontal){HStack{ForEach(Array(programmes.prefix(12))){p in VStack(alignment:.leading){Text(p.start.formatted(date:.omitted,time:.shortened));Text(p.title).lineLimit(2)}.font(.caption2).padding(10).frame(width:240,height:90,alignment:.topLeading).background(p.start<=Date() ? Color.blue.opacity(0.45) : Color.white.opacity(0.08))}}}}}
     }
+    private func startFromGuide(_ item:Media) {
+        guard item.kind == .live else{return}
+        library.watched(item)
+        play=item
+    }
     private var guideBrowser:some View {
-        HStack(alignment:.top,spacing:20){channelFilters;GuideTimeline(items:shown,library:library,open:{guideItem=$0})}
+        HStack(alignment:.top,spacing:20){channelFilters;GuideTimeline(items:shown,library:library,play:{startFromGuide($0)},details:{guideItem=$0})}
     }
     private var dashboard:some View {ScrollView{VStack(alignment:.leading,spacing:25){if library.sources.isEmpty{Text("Add your first playlist").font(.title2);Button("Add playlist"){add=true}.focused($homeFocus,equals:.content)}else{HStack{Button{openPage(.live,enter:true)}label:{Label("Live TV",systemImage:"tv")}.focused($homeFocus,equals:.content);ForEach([Page.movies,.series,.sources],id:\.self){p in Button{openPage(p,enter:true)}label:{Label(p.rawValue,systemImage:pageIcon(p))}}};dashboardRow("Recently viewed",base);dashboardRow("Favorites",library.media.filter{library.favorites.contains($0.id)});dashboardRow("Movies",library.media.filter{$0.kind == .movie});dashboardRow("Series",library.media.filter{$0.kind == .series})}}}}
     private func dashboardRow(_ title:String,_ items:[Media])->some View {VStack(alignment:.leading,spacing:10){Text(title).font(.title3.bold());if items.isEmpty{Text("Nothing here yet").font(.caption).foregroundStyle(.secondary)}else{ScrollView(.horizontal){HStack(spacing:25){ForEach(Array(items.prefix(20))){item in Button{if item.kind == .series{details=item}else if item.kind == .live{page = .live;selectChannel(item)}else{library.watched(item);play=item}}label:{MediaTile(item:item,favorite:library.favorites.contains(item.id)).frame(width:230)}.buttonStyle(CompactFocusStyle(inset: 3))}}.padding(16)}}}}
@@ -344,14 +386,15 @@ struct SeriesView:View {
     let item:Media; @ObservedObject var library:Library
     @Environment(\.dismiss) private var dismiss
     @State private var episodes:[Media]=[];@State private var error="";@State private var loading=true;@State private var play:Media?
-    var body:some View {VStack(alignment:.leading,spacing:20){HStack{Text(item.name).font(.title.bold());Spacer();Button("Close"){dismiss()}};if loading{ProgressView()}else if !error.isEmpty{Text(error)}else{ScrollView{LazyVStack(alignment:.leading){ForEach(episodes){e in Button{play=e}label:{Text(e.group+" · "+e.name).frame(maxWidth:.infinity,alignment:.leading)}}}}}}.padding(65).task{defer{loading=false};guard let s=library.sources.first(where:{$0.id==item.sourceID})else{return};do{episodes=try await Xtream(source:s).episodes(item);if episodes.isEmpty{error="No episodes returned."}}catch{self.error="Unable to retrieve episodes."}}.fullScreenCover(item:$play){e in Playback(item:e,library:library)}}
+    var body:some View {VStack(alignment:.leading,spacing:20){HStack{Text(item.name).font(.title.bold());Spacer();Button("Watch Live"){onPlay(item)};Button("Close"){dismiss()}};if loading{ProgressView()}else if !error.isEmpty{Text(error)}else{ScrollView{LazyVStack(alignment:.leading){ForEach(episodes){e in Button{play=e}label:{Text(e.group+" · "+e.name).frame(maxWidth:.infinity,alignment:.leading)}}}}}}.padding(65).task{defer{loading=false};guard let s=library.sources.first(where:{$0.id==item.sourceID})else{return};do{episodes=try await Xtream(source:s).episodes(item);if episodes.isEmpty{error="No episodes returned."}}catch{self.error="Unable to retrieve episodes."}}.fullScreenCover(item:$play){e in Playback(item:e,library:library)}}
 }
 struct GuideView:View {
-    let item:Media; @ObservedObject var library:Library; @Environment(\.dismiss) private var dismiss
+    let item:Media; @ObservedObject var library:Library; let onPlay:(Media)->Void
+    @Environment(\.dismiss) private var dismiss
     @State private var manualID=""
     var body:some View {
         VStack(alignment:.leading,spacing:20){
-            HStack{Text(item.name).font(.title.bold());Spacer();Button("Close"){dismiss()}}
+            HStack{Text(item.name).font(.title.bold());Spacer();Button("Watch Live"){onPlay(item)};Button("Close"){dismiss()}}
             HStack{Button("Refresh guide"){refresh()}.disabled(library.epgBusy);if library.epgBusy{ProgressView()};Text(library.guideLabel(item) ?? "Unmatched").font(.caption).foregroundStyle(.secondary)}
             HStack{TextField("Manual XMLTV channel ID",text:$manualID);Button("Apply"){library.setGuideID(item,manualID);refresh()}.disabled(library.epgBusy);Button("Automatic"){manualID="";library.setGuideID(item,"");refresh()}.disabled(library.epgBusy)}
             Text(library.epgStatus).font(.caption).foregroundStyle(.secondary)

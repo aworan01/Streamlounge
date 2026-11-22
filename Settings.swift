@@ -17,8 +17,13 @@ struct SettingsView:View {
             VStack(alignment:.leading,spacing:12){ForEach(sections,id:\.self){name in Button{enter(name)}label:{Text(name).font(.system(size:25)).lineLimit(1).minimumScaleFactor(0.65).frame(maxWidth:.infinity,alignment:.leading).foregroundStyle(section == name ? Color.cyan : Color.primary)}.focused(entryFocus,equals:name == "Playback" ? .content : .settingsSection(name))}}.frame(width:350).frame(maxHeight:.infinity,alignment:.topLeading).focusSection().onMoveCommand{direction in
                 let focusedName:String
                 switch entryFocus.wrappedValue {case .content?:focusedName="Playback";case .settingsSection(let name)?:focusedName=name;default:return}
-                guard let i=sections.firstIndex(of:focusedName) else{return}
-                switch direction {case .right:enter(focusedName);case .left:entryFocus.wrappedValue = .nav(.settings);case .up:if i>0 {entryFocus.wrappedValue = i==1 ? .content : .settingsSection(sections[i-1])};case .down:if i+1<sections.count {entryFocus.wrappedValue = .settingsSection(sections[i+1])};default:break}
+                // Let tvOS move focus vertically: manual Up/Down here competed
+                // with the focus engine and could skip entire rows.
+                switch direction {
+                case .right:enter(focusedName)
+                case .left:entryFocus.wrappedValue = .nav(.settings)
+                default:break
+                }
             }
             ScrollView { VStack(alignment:.leading,spacing:26){Text(section).font(.title2.bold())
                 switch section {
@@ -35,7 +40,7 @@ struct SettingsView:View {
                 case "EPG / TV Guide":
                     EPGSettingsPanel(library:library,entryFocus:entryFocus)
                 case "Data management":Button("Clear viewing history"){clearHistory=true}.focused(entryFocus,equals:.settingsOption);Text("Playlists and favorites are retained. Catalogs are stored in tvOS cache and may need refreshing after system cleanup.").font(.caption).foregroundStyle(.secondary)
-                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.2.4");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
+                default:Button("Back to settings categories"){entryFocus.wrappedValue = .settingsSection(section)}.focused(entryFocus,equals:.settingsOption);Text("Stream Lounge TV v0.2.5");Text("Independent tvOS adaptation of selected IPTVnator v0.25.0 functionality. IPTVnator code: MIT, 4gray. VideoLAN TVVLCKit 3.7.3: LGPL 2.1. Use only authorized streams.").font(.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth:.infinity,alignment:.leading).padding(16) }.frame(maxHeight:.infinity,alignment:.topLeading).focusSection()
         }.alert("Clear viewing history?",isPresented:$clearHistory){Button("Clear",role:.destructive){library.history=[];library.save()};Button("Cancel",role:.cancel){}}

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct GuideTimeline: View {
-    let items:[Media];@ObservedObject var library:Library;let open:(Media)->Void
+    let items:[Media];@ObservedObject var library:Library;let play:(Media)->Void;let details:(Media)->Void
     @State private var hourOffset=0
     @State private var clock=Date()
     @State private var search=""
@@ -18,7 +18,17 @@ struct GuideTimeline: View {
                 VStack(alignment:.leading,spacing:4){
                     HStack(spacing:8){Text("Channel").font(.caption).frame(width:channelWidth,alignment:.leading);ZStack(alignment:.leading){ForEach(0..<6,id:\.self){i in Text(start.addingTimeInterval(Double(i)*1800).formatted(date:.omitted,time:.shortened)).font(.system(size:17)).foregroundStyle(.secondary).offset(x:CGFloat(i)*timelineWidth/6)}}.frame(width:timelineWidth,height:30,alignment:.leading).clipped()}
                     ScrollView{LazyVStack(alignment:.leading,spacing:5){ForEach(visible){item in
-                        Button{open(item)}label:{HStack(spacing:8){Text(item.name).font(.system(size:20)).lineLimit(2).minimumScaleFactor(0.7).frame(width:channelWidth,height:65,alignment:.leading);schedule(item,width:timelineWidth)}}.buttonStyle(CompactFocusStyle(inset:3))
+                        HStack(spacing:8) {
+                            Button {play(item)} label: {
+                                HStack(spacing:6) {
+                                    Image(systemName:"play.fill").font(.system(size:15))
+                                    Text(item.name).font(.system(size:20)).lineLimit(2).minimumScaleFactor(0.7)
+                                }.frame(width:channelWidth,height:65,alignment:.leading)
+                            }.accessibilityLabel("Watch " + item.name)
+                            Button {details(item)} label: {schedule(item,width:timelineWidth)}
+                                .accessibilityLabel("Programme details for " + item.name)
+                        }
+                        .buttonStyle(CompactFocusStyle(inset:3))
                     }}}
                 }
             }

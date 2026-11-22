@@ -1,26 +1,35 @@
-# Stream Lounge TV v0.2.4 — automatic programme guide
+# Stream Lounge TV v0.2.5 — remote navigation, TV Guide playback, channel browser, quality labels
 
-Independent native tvOS app. This update retains v0.2.3's existing AVPlayer/VLC playback, playlist catalogue, sidebar and compact focus styles. No IPTV service, credentials or programme data is bundled.
+Native SwiftUI tvOS IPTV player. This release updates v0.2.4 without changing the bundle identifier (`com.streamlounge.tv`), player engines (AVPlayer / TVVLCKit), IPTV sources or EPG cache. No IPTV streams or programme data are bundled. Use only sources you are authorized to access.
 
-## Update existing v0.2.3 repository using GitHub web
+## Updating in your existing GitHub repository (web only)
 
-Replace `App.swift`, `Models.swift`, `Playback.swift`, `Settings.swift`, `project.yml`, and `README.md`. Add `EPG.swift` and `GuideUI.swift` at the repository root. Commit together. `Podfile` and `.github/workflows/build-tvos.yml` are unchanged. The complete source ZIP contains those unchanged files as well. `Tests/EPGSmoke.swift` is optional and is not part of the Xcode application target.
+Replace these root files together: `App.swift`, `Models.swift`, `Playback.swift`, `Settings.swift`, `GuideUI.swift`, `project.yml`, and `README.md`. Do **not** delete the existing `EPG.swift`, `Podfile`, `LICENSE.md` or `.github/workflows/build-tvos.yml`. The update ZIP contains only changed files; the full source ZIP contains all files including the unchanged files and the workflow.
 
-Run Actions → Build tvOS IPA → Run workflow. Download `StreamLoungeTV-unsigned` from the successful run, extract the IPA and sign/sideload using the existing method. Same bundle ID `com.streamlounge.tv`, tvOS 16 minimum, arm64. No new CocoaPods dependencies; EPG uses system zlib and Foundation XMLParser. Keep a backup of the previous IPA.
+Commit and run **Actions → Build tvOS IPA → Run workflow**. On success, download the `StreamLoungeTV-unsigned` artifact, sign it using your normal tvOS signing method, then install on Apple TV. This is an unsigned IPA build. Keep a copy of the previous installed/tested version.
 
-## EPG usage
+## What changed
 
-1. Open Settings → EPG / TV Guide. Provider, Custom and EPGShare sources are enabled by default. Click Update all guides now. Existing M3U sources are migrated on refresh by re-reading their headers when possible. A playlist refresh will also discover provider header URLs.
-2. Leave country codes blank to detect country tags (e.g. `UK: Sports`, `US | News`) in categories/channel names, or explicitly enter codes such as `UK, US, NG, ZA` (coverage is not guaranteed). Playlist-specific codes in Playlists → Edit override global codes. Codes are matched to country files listed by EPGShare01. Avoid requesting too many countries on constrained devices.
-3. Add custom XMLTV or XMLTV.gz URLs in Playlists → Edit, separated by spaces. Xtream automatically uses `xmltv.php`; M3U reads `url-tvg`, `x-tvg-url` and `tvg-url` header fields. The application discovers EPGShare's index and downloads relevant country files. No all-countries file is downloaded.
-4. Review per-playlist matched counts, feed errors and last update in EPG settings. Open TV Guide for the three-hour timeline; focus/select a channel to view programme details or enter a manual XMLTV channel ID. Use Automatic to remove a manual override and refresh. Guide data also appears in inline live TV channel rows and the Now Playing overlay.
-5. Default: provider first, custom second, EPGShare third; manual mapping wins, then preference for currently populated schedules and matching precision, then source order when otherwise equivalent. A manual mapping requires knowing the XMLTV ID. Exact `tvg-id`, exact normalized name, quality-tag-stripped name, optional sibling borrowing. Ambiguous in-feed name matches are skipped. Time-shift and regional designators are conservatively preserved. Cross-source matching is heuristic; review mismatches manually.
-6. Default refresh interval 12 hours while active; supports foreground checks, app launch and playlist imports. Default seven future days and one past day; global time offset. tvOS does not guarantee execution when suspended. Cache is separate per playlist, JSON in the tvOS Caches directory, may be evicted by system. Failed downloads preserve available older guides where practical. Safety limits: 20 feeds per refresh, 64 MiB downloaded file, 160 MiB expanded file, 300,000 retained programmes per feed, 400 programmes per matched channel, 64 MiB serialized cache per playlist. These limits favor bounded resource usage; large feeds may need narrower country selection.
+1. **Sidebar skipping:** Removed competing manual Up/Down focus changes in the main sidebar and Settings category column. tvOS's native focus engine handles vertical movement; Right enters the highlighted section. Use centre/Select to open pages. This requires actual Siri Remote verification.
+2. **Play from TV Guide:** Selecting a channel name (play icon) in the EPG timeline starts its current live stream in the fullscreen player. Selecting the adjacent schedule opens programme details and manual guide matching; that screen also has **Watch Live**, which opens inline playback in Live TV. Historical/future programme cells do **not** imply catch-up playback.
+3. **Now Playing → Channels:** The channel browser starts with the current playlist and group, scrolls to and focuses the currently playing channel, and offers playlist and group menus on the left. Changing the group scrolls the resulting channel list to its first item. The full list is no longer restricted by the Live TV page's search or category filters. Previous/Next stays within the currently playing playlist.
+4. **Live TV playlist header:** A dedicated one-line **Playlist** heading, a compact selector and a separate full source name (wrappable) prevent a long playlist name from being silently truncated.
+5. **Now Playing → Quality:** The icon displays **SD, HD, FHD or 4K** based on the real video raster size reported by the active decoder. Before dimensions are reported, it shows `—` instead of falsely displaying 4K. The Quality and Info panels show the classification and actual resolution, and the existing player-dependent bandwidth options remain.
 
-## Verification and limitations
+## On-device test checklist
 
-Passed in Linux Swift: core model/EPG type checks; Swift syntax parse for all app files; smoke test including XMLTV parsing, entity decoding, descriptions, relevant-channel filtering, manual overrides, exact-ID and normalized-name matching, ambiguous names, +1 preservation, M3U header discovery, country detection, v0.2.3 source migration, JSON snapshot round-trip and gzip. No Apple SDK available here: complete Xcode build, actual EPGShare network access, provider access, memory performance and Siri Remote timeline navigation have not been verified. Larger source catalogues may refresh slowly. Per-feed time offsets, SQLite indexing, source-specific manual links and a graphical XMLTV ID picker are not implemented in this version. External EPG coverage and availability depend on the service; only use sources you are authorized to access.
+- Open Dashboard, move Down once per menu item to Movies. Confirm no menu items skipped. Repeat in reverse and in Settings.
+- Open TV Guide, select the **channel name** to play live. Exit the player; select the **programme cell** to open details and then select **Watch Live**.
+- Play a channel near the end of a long playlist, enter fullscreen → **Channels**. Verify it scrolls to the active channel and the selected channel is highlighted. Change groups and playlists from the left side and play a channel from a different group.
+- In Live TV select a playlist with a very long name; verify its full name remains visible below the selector.
+- Play known 576p, 720p, 1080p and 2160p streams; the Quality icon should show SD, HD, FHD and 4K respectively. A stream with no detected video should show `—`. This indicator is informational, not a quality selector or a guarantee of picture availability.
 
-## Attribution
+## Validation and limitations
 
-Selected IPTVnator v0.25.0 media classification and Xtream URL logic adapted under MIT, copyright 4gray (see LICENSE.md). IMD TV (https://github.com/majorleeevil/imd-tv, GPL-3.0) was studied as an architectural reference; the EPG Swift implementation is independently written, not a translation or inclusion of its Kotlin source. EPGShare01 (https://epgshare01.online/epgshare01/) provides external data subject to its own terms and availability. TVVLCKit 3.7.3 is VideoLAN's LGPL-2.1 library; public redistribution requires compliance with applicable upstream licence and third-party obligations. This application is not affiliated with any of those projects.
+- Passed: Swift syntax parsing of all application source files under Linux Swift; standalone type checking of the Foundation/EPG core; previous EPG import/matching smoke tests; new `Tests/QualitySmoke.swift` for quality-tier mapping; ZIP archive integrity. Neither TVVLCKit nor Apple's tvOS SDK is installed in the container.
+- **Not yet verified:** Entire project compiling in Xcode, focus movement on Apple TV, fullscreen channel-list auto-scroll, or performance with a large programme catalogue. Report any compile errors from the GitHub Actions `build-log` artifact. Do not treat this release as device-tested until you install it.
+- This is live playback from EPG, **not catch-up/time-shifted playback**. EPG match coverage still depends on external data and the provider.
+
+## Project and third-party licences
+
+The IPTVnator v0.25.0 utility/URL-construction adaptations remain under MIT, copyright 4gray; see `LICENSE.md`. IMD TV's GPL-3.0 EPG architecture was reviewed as a reference, but the included Swift EPG code is independently written. TVVLCKit 3.7.3 is subject to its VideoLAN LGPL-2.1 obligations. Check these licences and any linked dependencies before public distribution. The app is independently named and is not affiliated with IPTVnator, IMD TV or VideoLAN.
