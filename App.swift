@@ -163,7 +163,7 @@ struct SeriesView:View {
     let item:Media; @ObservedObject var library:Library
     @Environment(\.dismiss) private var dismiss
     @State private var episodes:[Media]=[];@State private var error="";@State private var loading=true;@State private var play:Media?
-    var body:some View {VStack(alignment:.leading,spacing:20){HStack{Text(item.name).font(.title.bold());Spacer();Button("Close"){dismiss()}};if loading{ProgressView()}else if !error.isEmpty{Text(error)}else{ScrollView{LazyVStack(alignment:.leading){ForEach(episodes){e in Button{play=e}label:{Text(e.group+" · "+e.name).frame(maxWidth:.infinity,alignment:.leading)}}}}}}.padding(65).task{defer{loading=false};guard let s=library.sources.first(where:{$0.id==item.sourceID})else{return};do{episodes=try await Xtream(source:s).episodes(item);if episodes.isEmpty{error="No episodes returned."}}catch{error="Unable to retrieve episodes."}}.fullScreenCover(item:$play){e in Playback(item:e)}}
+    var body:some View {VStack(alignment:.leading,spacing:20){HStack{Text(item.name).font(.title.bold());Spacer();Button("Close"){dismiss()}};if loading{ProgressView()}else if !error.isEmpty{Text(error)}else{ScrollView{LazyVStack(alignment:.leading){ForEach(episodes){e in Button{play=e}label:{Text(e.group+" · "+e.name).frame(maxWidth:.infinity,alignment:.leading)}}}}}}.padding(65).task{defer{loading=false};guard let s=library.sources.first(where:{$0.id==item.sourceID})else{return};do{episodes=try await Xtream(source:s).episodes(item);if episodes.isEmpty{error="No episodes returned."}}catch{self.error="Unable to retrieve episodes."}}.fullScreenCover(item:$play){e in Playback(item:e)}}
 }
 struct GuideView:View {
     let item:Media; @ObservedObject var library:Library; @Environment(\.dismiss) private var dismiss
