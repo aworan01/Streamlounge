@@ -52,7 +52,7 @@ import TVVLCKit
             if ksPlayer.view.superview !== container {
                 ksPlayer.view.removeFromSuperview()
                 ksPlayer.view.frame=container.bounds
-                ksPlayer.view.autoresizingMask=[.flexibleWidth,.flexibleHeight]
+                ksPlayer.view.autoresizingMask = [UIView.AutoresizingMask.flexibleWidth, UIView.AutoresizingMask.flexibleHeight]
                 container.addSubview(ksPlayer.view)
             }
         } else {ksPlayer.detach()}

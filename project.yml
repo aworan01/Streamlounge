@@ -23,6 +23,7 @@ targets:
     - LocalM3UServer.swift
     - MovieDetailsView.swift
     - KSPlayerBridge.swift
+    - Assets.xcassets
     info:
       path: Info.plist
       properties:
@@ -36,6 +37,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.streamlounge.tv
         TARGETED_DEVICE_FAMILY: '3'
+        ASSETCATALOG_COMPILER_APPICON_NAME: 'App Icon'
         CODE_SIGNING_ALLOWED: 'NO'
         CODE_SIGNING_REQUIRED: 'NO'
     scheme:
