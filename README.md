@@ -1,4 +1,4 @@
-# Stream Lounge TV v0.2.0 — test release
+# Stream Lounge TV v0.2.1 — test release
 
 Independent native tvOS adaptation of selected IPTVnator v0.25.0 functionality. Not affiliated with the IPTVnator project. Original source modules adapted in Models.swift are MIT licensed (see LICENSE.md). Use your own authorized streams.
 
@@ -10,7 +10,18 @@ Independent native tvOS adaptation of selected IPTVnator v0.25.0 functionality. 
 4. Download `StreamLoungeTV-unsigned` from the completed job's Artifacts, unzip the artifact, then sign/sideload the IPA using your own signing setup. The unsigned file cannot launch unmodified.
 5. If compilation fails, send the full build log (including the failing step). No macOS/tvOS SDK is available in the preparation environment; Swift syntax and model type-checking were performed locally, but integration and runtime tests are pending.
 
-## What's new
+## v0.2.1: remote and fullscreen revision
+
+If v0.2.0 is already building, replace only App.swift, Playback.swift, Settings.swift and project.yml at the root of the working repository. Keep Models.swift, Podfile, LICENSE.md and the existing corrected workflow. The bundle identifier and catalog schema are unchanged. No new dependency is introduced.
+
+- Sidebar: one-line app name and navigation labels. Press Right on a sidebar entry to enter the relevant page directly. Settings has explicit category-to-option focus routing.
+- Channel rows: wider name column, smaller icon and adaptive text that tries regular size, compact size and finally full wrapping without truncation. Settings > Appearance > Text size offers Compact, Standard and Large.
+- Fullscreen: video fills the available screen; focus starts on Play/Pause. The bottom control bar offers previous/next, channel list, source switching, favorites, audio, subtitles, quality, info, engine selection, hide and close. Press Select or a directional button to show hidden controls; Back closes a panel, hides the overlay, or exits fullscreen depending on state. Play/Pause remote button toggles playback. Close returns to inline playback for live TV.
+- Source lists the currently playing stream and other imported streams of the same media kind with a matching name or nonempty TVG ID. It cannot discover sources not imported.
+- Audio and subtitle options are actual tracks made available by the active AVPlayer or VLC engine; external subtitle download is not implemented. Quality on AVPlayer sets a preferred adaptive bitrate ceiling (not a fixed resolution); VLC lists available video tracks, not individual HLS variants. No forced reduction of resolution by default. Info reports engine, dimensions/availability and AVPlayer's observed bitrate when available, not a full codec/HDR analysis.
+- Actual tvOS/Xcode compilation and remote testing remain required; focus APIs and VLC track bindings need device validation. Swift syntax was checked locally, not type checked against SwiftUI or TVVLCKit.
+
+## What's new in v0.2.0
 
 - Persistent sidebar, dashboard with recent/favorites and VOD, source/category/channel columns, inline player, fullscreen expansion, next/previous and manual engine switching.
 - Dedicated settings for engine, buffering, VLC hardware decoding, two dark themes, XMLTV refresh, clear history and About.
