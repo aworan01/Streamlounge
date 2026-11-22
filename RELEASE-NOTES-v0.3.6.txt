@@ -1,0 +1,8 @@
+v0.3.6 — Native-feed entry point and ClearKey diagnostics
+
+- Watched button: authorized M3U URL, native tvOS playback engines only; no browser or Cloudflare bypass; no implied Watched API/login support.
+- Import reports if a web/login/Cloudflare page was returned in place of an M3U feed.
+- ClearKey reports exact byte length for malformed keys without exposing secrets; playback stops with a clear status when a channel has no valid key.
+- Unsupported HLS ClearKey labeling no longer results in misleading playback.
+- Persist asynchronous ClearKey license errors instead of overwriting them with generic buffering status.
+- No confirmed real-stream ClearKey playback yet.

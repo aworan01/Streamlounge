@@ -16,6 +16,8 @@ import Foundation
             // The supplied `h` payload decodes to 17 bytes, not 16. Reject it.
             precondition(parsed.keys.isEmpty)
             precondition(parsed.warnings.count == 2)
+            precondition(parsed.warnings.allSatisfy { $0.contains("17 bytes") })
+            precondition(parsed.warnings.allSatisfy { !$0.contains("Zqs3RElk") })
             precondition(parseM3U(text,source:source).count == 3)
         }
 

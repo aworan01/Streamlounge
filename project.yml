@@ -6,8 +6,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: 0.3.5
-    CURRENT_PROJECT_VERSION: '15'
+    MARKETING_VERSION: 0.3.6
+    CURRENT_PROJECT_VERSION: '16'
 targets:
   StreamLoungeTV:
     type: application
@@ -25,6 +25,7 @@ targets:
     - MovieDetailsView.swift
     - KSPlayerBridge.swift
     - ClearKey.swift
+    - WatchedNativeConnectView.swift
     - Assets.xcassets
     info:
       path: Info.plist

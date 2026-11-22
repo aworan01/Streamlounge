@@ -169,7 +169,10 @@ struct ManualFocusStyle: ButtonStyle {
             }
             else {
                 guard let url=httpURL(s.address) else {throw StreamFailure.invalidURL}
-                let data=try await fetch(url); guard let text=String(data:data,encoding:.utf8) ?? String(data:data,encoding:.isoLatin1) else {throw StreamFailure.invalidData}; s.discoveredEPG=guideURLs(in:text,base:url);readPlaylist(text)
+                let data=try await fetch(url); guard let text=String(data:data,encoding:.utf8) ?? String(data:data,encoding:.isoLatin1) else {throw StreamFailure.invalidData}
+                let sample=String(text.prefix(300)).trimmingCharacters(in:.whitespacesAndNewlines).lowercased()
+                if sample.hasPrefix("<!doctype html") || sample.hasPrefix("<html") || sample.hasPrefix("<head") {throw StreamFailure.htmlInsteadOfPlaylist}
+                s.discoveredEPG=guideURLs(in:text,base:url);readPlaylist(text)
             }
             guard !items.isEmpty else {throw StreamFailure.empty}
             // Import only credentials explicitly supplied by the M3U. Never
@@ -253,6 +256,7 @@ struct Home:View {
     @State private var details:Media?
     @State private var editor:Source?
     @State private var add=false
+    @State private var showWatchedNative=false
     @State private var guideItem:Media?
     @State private var removeSource:Source?
     @State private var showExitConfirmation=false
@@ -292,13 +296,18 @@ struct Home:View {
                         if direction == .right { moveSidebarRight() }
                     }
                     Spacer(minLength:0)
+                    Button { showWatchedNative=true } label: {
+                        Label("Watched",systemImage:"play.rectangle.on.rectangle")
+                            .font(.system(size:labelSize,weight:.medium))
+                            .frame(maxWidth:.infinity,alignment:.leading)
+                    }.buttonStyle(CompactFocusStyle())
                     Button { showExitConfirmation=true } label: {
                         Label("Exit",systemImage:"rectangle.portrait.and.arrow.right")
                             .font(.system(size:labelSize,weight:.medium))
                             .frame(maxWidth:.infinity,alignment:.leading)
                             .foregroundStyle(.white)
                     }.buttonStyle(CompactFocusStyle())
-                    Text("v0.3.3").font(.system(size:19)).foregroundStyle(.secondary)
+                    Text("v0.3.6").font(.system(size:19)).foregroundStyle(.secondary)
                 }.padding(18).frame(width:300).frame(maxHeight:.infinity,alignment:.topLeading).focusSection().background(Color.white.opacity(0.045))
             }
             VStack(alignment:.leading,spacing:14) {
@@ -339,6 +348,7 @@ struct Home:View {
         }
         .sheet(item:$editor){s in SourceEditor(library:library,source:s)}
         .sheet(isPresented:$add){SourceEditor(library:library,source:Source(name:"",address:"",type:"M3U URL"))}
+        .sheet(isPresented:$showWatchedNative){WatchedNativeConnectView(library:library,openPlaylists:{openPage(.sources,enter:true)})}
         .alert("Remove source?",isPresented:Binding(get:{removeSource != nil},set:{if !$0 {removeSource=nil}})){Button("Remove",role:.destructive){if let s=removeSource{library.remove(s)};removeSource=nil};Button("Cancel",role:.cancel){removeSource=nil}}
         .alert("Exit Stream Lounge TV?",isPresented:$showExitConfirmation) {
             Button("Stop and return to Dashboard",role:.destructive) {

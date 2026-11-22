@@ -1,3 +1,13 @@
+# Stream Lounge TV v0.3.6 — native feed / ClearKey diagnostics
+
+**Watched connection:** A dedicated Watched screen references `https://watched.cx/home` but does not embed or scrape the website. A provider-authorized native M3U feed URL can be added through the screen; content is played with the existing tvOS engines. The site's private authentication, catalog, and Cloudflare challenge cannot be reproduced or bypassed without a supported provider API and authorization. Entering the website homepage as a playlist will be rejected.
+
+**ClearKey:** ClearKey playback remains unverified on a real encrypted stream. The previously uploaded sample has a **17-byte** content key (AES-128 requires 16 bytes); the M3U importer now reports key and KID byte lengths, and playback explicitly reports when no valid key was imported. The app does not auto-correct keys or extract them. Currently only single-key CENC on supported DASH/MP4 through KSPlayer FFmpeg is within scope. ClearKey-labelled HLS is reported as unsupported instead of silently failing. W3C license server connectivity and encrypted playback require a real authorized fixture. The error remains visible in the player.
+
+**Build:** Keep Xcode 26.2 and KSPlayer 5.6.2; use the established GitHub Actions `build-tvos.yml`. Preserve bundle ID and source/playlist data when installing.
+
+---
+
 ## v0.3.5 — SwiftUI Settings selection compiler hotfix
 
 - Fixes the Xcode 26.2 compilation failure at `ConfirmSelection.swift:27:25` ("compiler unable to type-check this expression in reasonable time").

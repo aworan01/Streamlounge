@@ -21,6 +21,7 @@ import TVVLCKit
     private var lastProgress=Date.distantPast
     private var monitor: Task<Void,Never>?
     private var clearKeyTask: Task<Void,Never>?
+    private var clearKeyFailure: String? = nil
     private var started = Date()
     @Published private(set) var paused = false
     @Published private(set) var qualityCap: Double = 0
@@ -85,7 +86,19 @@ import TVVLCKit
     }
     private var options: UserDefaults { .standard }
     func start(_ item: Media, force: String? = nil) {
-        stop(); active=item; paused=false; retried=false;resumed=false
+        stop(); active=item; paused=false; retried=false;resumed=false;clearKeyFailure=nil
+        if item.drmType == "clearkey" && ClearKeyVault.shared.enabled(for:item.url) == nil {
+            engine="KSPlayer"
+            status="ClearKey cannot start: no valid 16-byte key is stored for this channel. Check the import warning, or open Now Playing → Player → ClearKey to enter a valid provider-supplied key."
+            clearKeyFailure=status
+            return
+        }
+        if item.drmType == "clearkey" && URL(string:item.url)?.pathExtension.lowercased() == "m3u8" {
+            engine="KSPlayer"
+            status="This HLS stream is labelled ClearKey, but this app's ClearKey implementation only handles supported CENC DASH/MP4. Ask the provider for a compatible manifest and encryption method."
+            clearKeyFailure=status
+            return
+        }
         if item.drmType == "widevine" {
             engine="KSPlayer"
             status="This channel uses Widevine DRM, which Stream Lounge TV does not support."
@@ -108,7 +121,7 @@ import TVVLCKit
     }
     private func launch(_ next: String) {
         guard let current=active,let url=httpURL(current.url) else {status="Invalid stream URL";return}
-        monitor?.cancel();clearKeyTask?.cancel();clearKeyTask=nil
+        monitor?.cancel();clearKeyTask?.cancel();clearKeyTask=nil;clearKeyFailure=nil
         native.pause();native.replaceCurrentItem(with:nil);vlc.stop()
         #if canImport(KSPlayerUI) && canImport(KSPlayer)
         if engine == "KSPlayer" && next != "KSPlayer" {ksPlayer.close()}
@@ -131,7 +144,8 @@ import TVVLCKit
                     } catch {
                         guard !Task.isCancelled, let self,
                               self.active?.id == current.id else {return}
-                        self.status="ClearKey: \(error.localizedDescription)"
+                        self.clearKeyFailure="ClearKey: \(error.localizedDescription)"
+                        self.status=self.clearKeyFailure ?? "ClearKey error"
                     }
                 }
             } else {
@@ -160,6 +174,7 @@ import TVVLCKit
     }
     private func check() {
         guard active != nil,!paused else{return}
+        if let failure=clearKeyFailure {status=failure;return}
         let elapsed=Date().timeIntervalSince(started)
         if engine == "AVPlayer" {
             guard let item=native.currentItem else{return}

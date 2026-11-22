@@ -34,8 +34,8 @@ func qualityTier(width:Double,height:Double)->String {
     return "SD"
 }
 enum StreamFailure: LocalizedError {
-    case invalidURL, empty, badResponse, invalidData
-    var errorDescription: String? { switch self { case .invalidURL: return "Enter a valid HTTP or HTTPS URL."; case .empty: return "No playable entries found."; case .badResponse: return "The provider rejected the request or returned an error."; case .invalidData: return "The provider returned an unexpected format." } }
+    case invalidURL, empty, badResponse, invalidData, htmlInsteadOfPlaylist
+    var errorDescription: String? { switch self { case .invalidURL: return "Enter a valid HTTP or HTTPS URL."; case .empty: return "No playable entries found."; case .badResponse: return "The provider rejected the request or returned an error."; case .invalidData: return "The provider returned an unexpected format."; case .htmlInsteadOfPlaylist: return "The server returned a web/login/Cloudflare page rather than an M3U playlist. A provider-authorized M3U feed or supported API is required for native Apple TV playback." } }
 }
 func httpURL(_ text: String) -> URL? {
     guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)), let scheme = url.scheme?.lowercased(), ["http","https"].contains(scheme), url.host != nil else { return nil }; return url
@@ -94,6 +94,23 @@ private func playlistKeyBytes(_ raw: String) -> Data? {
     }
     guard let decoded=playlistB64Bytes(value),decoded.count == 16 else {return nil}
     return decoded
+}
+private func clearKeyDiagnostic(_ raw: String) -> String {
+    guard let data=raw.data(using:.utf8),
+          let json=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],
+          let first=(json["keys"] as? [[String:Any]])?.first else {
+        return "This entry has no parseable ClearKey JSON object."
+    }
+    let kidText=first["kid"] as? String ?? ""
+    let value=(first["k"] as? String) ?? (first["h"] as? String) ?? ""
+    func length(_ value:String)->Int? {
+        let compact=value.trimmingCharacters(in:.whitespacesAndNewlines)
+        if compact.count == 32, compact.allSatisfy({$0.isHexDigit}) {return 16}
+        return playlistB64Bytes(compact)?.count
+    }
+    let kidCount=length(kidText).map {"\($0)"} ?? "invalid"
+    let keyCount=length(value).map {"\($0)"} ?? "invalid"
+    return "ClearKey KID is \(kidCount) bytes and content key is \(keyCount) bytes; both must be exactly 16 bytes. Obtain the correct values from the authorized provider."
 }
 private func clearKeyFromPlaylist(_ raw: String) -> (kid:String,key:String)? {
     // Kodi/inputstream-adaptive M3U: supports JWKS `k` and provider `h` forms.
@@ -159,7 +176,10 @@ func parseM3UDetailed(_ text: String, source: Source) -> ParsedM3U {
                     if let rawKey=kodi["inputstream.adaptive.license_key"],
                        let pair=clearKeyFromPlaylist(rawKey) {
                         result.keys.append(PlaylistClearKey(streamURL:key,keyIDHex:pair.kid,keyHex:pair.key))
-                    } else {result.warnings.append("ClearKey entry \(media.name) has no supported 16-byte key/KID pair.")}
+                    } else {
+                        let reason=clearKeyDiagnostic(kodi["inputstream.adaptive.license_key"] ?? "")
+                        result.warnings.append("ClearKey entry \(media.name): \(reason)")
+                    }
                 }
                 result.media.append(media)
             }
