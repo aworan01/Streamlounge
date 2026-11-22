@@ -53,17 +53,34 @@ import KSPlayerUI
         guard let model=view.playerLayer?.subtitleModel else {return []}
         return model.subtitleInfos.map{($0.name,model.selectedSubtitleInfo?.name == $0.name)}
     }
+    // KSPlayer 5.6.2 exposes tracks as [any MediaPlayerTrack], while
+    // select(track:) requires a concrete conforming type. Explicitly dispatch
+    // the three track types exported by its tvOS Swift interface instead of
+    // passing an existential to the opaque/generic selection method.
+    private func selectConcreteTrack(_ track: any MediaPlayerTrack, on player: any MediaPlayerProtocol) -> Bool {
+        if let concrete = track as? AVMediaPlayerTrack {
+            player.select(track: concrete)
+        } else if let concrete = track as? AVMediaSelectionTrack {
+            player.select(track: concrete)
+        } else if let concrete = track as? FFmpegAssetTrack {
+            player.select(track: concrete)
+        } else {
+            return false
+        }
+        return true
+    }
+
     @discardableResult func selectAudio(_ index:Int)->Bool {
         guard let player=view.playerLayer?.player else {return false}
         let tracks=player.tracks(mediaType:.audio)
         guard tracks.indices.contains(index) else {return false}
-        player.select(track:tracks[index]);return true
+        return selectConcreteTrack(tracks[index], on: player)
     }
     @discardableResult func selectVideo(_ index:Int)->Bool {
         guard let player=view.playerLayer?.player else {return false}
         let tracks=player.tracks(mediaType:.video)
         guard tracks.indices.contains(index) else {return false}
-        player.select(track:tracks[index]);return true
+        return selectConcreteTrack(tracks[index], on: player)
     }
     @discardableResult func selectSubtitle(_ index:Int)->Bool {
         guard let layer=view.playerLayer else {return false}
