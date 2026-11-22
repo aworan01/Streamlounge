@@ -1,31 +1,31 @@
-# Stream Lounge TV 0.1.0 (experimental)
+# Stream Lounge TV v0.2.0 — test release
 
-An unofficial native SwiftUI tvOS implementation adapting selected code and behavior from [IPTVnator v0.25.0](https://github.com/4gray/iptvnator/tree/v0.25.0). It is not the official app or a full feature-equivalent port. No original branding is included. MIT upstream notice in LICENSE.md. Adapted source modules:
-- `libs/shared/m3u-utils/src/lib/m3u-vod-detection.util.ts` — M3U VOD detection, translated subset.
-- `libs/portal/xtream/data-access/src/lib/services/xtream-url.service.ts` — live, movie, series URL construction, translated subset.
+Independent native tvOS adaptation of selected IPTVnator v0.25.0 functionality. Not affiliated with the IPTVnator project. Original source modules adapted in Models.swift are MIT licensed (see LICENSE.md). Use your own authorized streams.
 
-## Build through GitHub's website (no Mac, terminal, signing keys or account secrets needed)
+## Upgrade on GitHub (browser only)
 
-1. Create a new repository at https://github.com/new (suggested name `StreamLoungeTV`). Select Public or Private as desired, and initialize with a README. GitHub-hosted standard runners are normally free for public repositories; private repositories may use billed minutes.
-2. Extract this source ZIP on your computer. On the repository's Code tab, click Add file > Upload files. Upload `App.swift`, `Models.swift`, `project.yml`, `LICENSE.md` to the ROOT (not inside an extra directory). Commit changes. You can replace the generated README with this file if desired.
-3. On the Code tab, click Add file > Create new file. In the filename field enter **.github/workflows/build-tvos.yml** exactly. Open the workflow file from the extracted ZIP (it may be hidden), or use the separately supplied workflow file, and copy its entire text into GitHub. Commit to the default branch. GitHub must be allowed to run Actions (Settings > Actions > General). Do not upload just the ZIP archive to the repository.
-4. Select Actions > Build tvOS IPA > Run workflow > Run workflow. A push to main/master with changed source/workflow also triggers a build automatically, so avoid starting duplicate runs if one is already running.
-5. When green, open the completed run and download `StreamLoungeTV-unsigned` under Artifacts. Extract the downloaded artifact ZIP to find `StreamLoungeTV-unsigned.ipa`.
-6. Use your Apple TV sideloading/signing tool (e.g. ATVLoadly if its signing service and device support work) to sign and install. An unsigned IPA cannot run directly on retail Apple TV. Pair the correct Apple TV, use a compatible provisioning profile and signing identity. Device installation is not tested here.
+1. Extract the ZIP. Keep the existing repository and bundle identifier (`com.streamlounge.tv`). In GitHub upload/replace App.swift, Models.swift, Playback.swift, Settings.swift, project.yml, Podfile, README.md, LICENSE.md at repository root.
+2. Replace `.github/workflows/build-tvos.yml` using GitHub's web editor. Do not upload the workflow at the root; if ZIP extraction hides `.github`, use the separately supplied workflow.
+3. Under Actions → Build tvOS IPA → Run workflow. The runner generates the project, installs pinned TVVLCKit 3.7.3 using CocoaPods, builds the workspace for arm64 Apple TV hardware, verifies the executable and packages the unsigned IPA. The first dependency download is large.
+4. Download `StreamLoungeTV-unsigned` from the completed job's Artifacts, unzip the artifact, then sign/sideload the IPA using your own signing setup. The unsigned file cannot launch unmodified.
+5. If compilation fails, send the full build log (including the failing step). No macOS/tvOS SDK is available in the preparation environment; Swift syntax and model type-checking were performed locally, but integration and runtime tests are pending.
 
-## In this source package
+## What's new
 
-- Native tvOS 16+ SwiftUI layout; focus-based remote navigation, category and source filtering, search, channel artwork.
-- Remote M3U/M3U8 URL import and pasted text input; direct HLS playlist recognition; multiple sources; source edit, refresh and delete.
-- Xtream provider API: live channels, VOD catalog, series and season episodes; HLS live playback URLs.
-- AVPlayer/VideoPlayer fullscreen playback for Apple-supported formats; error message for AVPlayer item failure. Unsupported containers/codecs, raw TS streams and DASH may not play. No alternative player engine.
-- Favorites (long-press item), recent history for catalog items, manually configured uncompressed XMLTV programme listings (long-press live channel > guide > load). EPG requires matching tvg-id/epg_channel_id. Catalog cache may be purged by tvOS; refresh sources if necessary.
-- No media or subscriptions included. Use authorized sources only.
+- Persistent sidebar, dashboard with recent/favorites and VOD, source/category/channel columns, inline player, fullscreen expansion, next/previous and manual engine switching.
+- Dedicated settings for engine, buffering, VLC hardware decoding, two dark themes, XMLTV refresh, clear history and About.
+- AVPlayer remains available; Auto starts VLC for UHD/4K-named entries and MKV, or falls back to VLC if AVPlayer fails/no picture is ready after 15 seconds. Frame readiness is a heuristic and may cause a fallback on audio-only or slow streams. Choose AVPlayer manually to avoid fallback. Software decoding is an experimental troubleshooting option; results depend on device, formats and provider.
+- Visible playback engine, reported dimensions and AVPlayer observed network bitrate. Not a complete codec/HDR analyzer.
+- Original M3U and Xtream source models retained, with existing playlist/favorite/history keys. Upgrading in place with the same signing identity may retain data; tvOS may evict cached catalogs. Avoid removing the working app until testing the replacement, particularly if you need its data.
 
-## Not implemented / important limitations
+## Test 4K audio-only issue
 
-Stalker portal, local file picker (tvOS has no conventional Files picker), automatic XMLTV discovery, compressed XMLTV guide, full timeline grid, catch-up/archive, parental PIN, shared library synchronization, TMDB, episode history/resume, advanced codec engine, custom headers, offline downloads, desktop visual parity, production app icon and Top Shelf art. Pasted text field is suitable for small playlists only. Source credentials and URLs are stored locally in UserDefaults/cache in this prototype, NOT Keychain; do not commit credentials. HTTP is permitted for legacy IPTV providers but transmits data insecurely; prefer HTTPS. Invalid TLS certificates are not bypassed.
+Settings → Playback → VLC; leave hardware decoding enabled. Select the same 4K channel; note the engine, resolution, sound and picture. If the picture remains black, stop the stream, disable hardware decoding and reopen. Try AVPlayer manually for comparison; report the result. For a radio-only service use AVPlayer explicitly if needed. Do not share private playlist credentials in logs. No universal 4K guarantee; DRM, codecs, network and device capabilities still apply.
 
-## Validation
+## Known limitations
 
-Core Foundation code type-checked and sample M3U/URL tests passed with Linux Swift; full app syntax parsed. The native SwiftUI target was NOT compiled with the tvOS SDK in this environment. GitHub Actions is the first hardware-target build check. No claim of successful compilation, playback or installation on a real Apple TV. If the build fails, download the `build-log` artifact (or copy the failing step output) for diagnosis.
+Not a feature-complete IPTVnator replica. Stalker, catch-up, grouped M3U series, full multi-channel EPG timeline, cloud/local file imports, watch progress, parental control, stream authentication headers, comprehensive codec/HDR diagnostics and automatic reconnect are not implemented. Basic XMLTV supports uncompressed XML and one loaded guide at a time. Switching away from Live TV stops the inline stream. TV remote layout and focus need device testing. Imported account credentials and URLs remain in local preferences/cache from the prior version; avoid sharing these files.
+
+## Third-party notices and distribution
+
+IPTVnator source reference: https://github.com/4gray/iptvnator/tree/v0.25.0 (MIT; upstream trademark and logo are not used as app identity). TVVLCKit 3.7.3 is distributed by VideoLAN under LGPL 2.1 (see upstream COPYING.txt and CocoaPods spec). VLC source: https://code.videolan.org/videolan/VLCKit ; libVLC: https://code.videolan.org/videolan/vlc . Dependency spec: https://github.com/CocoaPods/Specs/blob/master/Specs/b/f/5/TVVLCKit/3.7.3/TVVLCKit.podspec.json . Binary source archive: https://download.videolan.org/cocoapods/prod/TVVLCKit-3.7.3-319ed2c0-79128878.tar.xz . This package does not distribute that binary itself. Before redistributing compiled IPA builds, comply with applicable VLC/LGPL and transitive library requirements (including notices, corresponding source and relinking/reverse-engineering rights where required). This test package is intended for your own build and device testing.

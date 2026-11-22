@@ -55,10 +55,14 @@ import Combine
     @StateObject private var library=Library()
     var body: some Scene { WindowGroup { Home(library:library).preferredColorScheme(.dark) } }
 }
-enum Page:String,CaseIterable {case home="Home",live="Live TV",movies="Movies",series="Series",favorites="Favorites",search="Search",sources="Sources"}
+enum Page:String,CaseIterable {case home="Dashboard",live="Live TV",guide="TV Guide",movies="Movies",series="Series",favorites="Favorites",history="Recently viewed",search="Search",sources="Playlists",settings="Settings"}
 struct Home:View {
     @ObservedObject var library:Library
     @State private var page:Page = .home
+    @State private var selected:Media?
+    @State private var expanded=false
+    @StateObject private var playback=PlaybackSession()
+    @AppStorage("appearance") private var appearance="Night Owl"
     @State private var filter="All groups"
     @State private var sourceFilter="All sources"
     @State private var query=""
@@ -75,33 +79,41 @@ struct Home:View {
         case .movies:return all.filter{$0.kind == .movie}
         case .series:return all.filter{$0.kind == .series || $0.kind == .episode}
         case .favorites:return all.filter{library.favorites.contains($0.id)}
-        case .home:let lookup=Dictionary(all.map{($0.id,$0)},uniquingKeysWith:{a,_ in a}); return library.history.compactMap{lookup[$0]}
+        case .home,.history:let lookup=Dictionary(all.map{($0.id,$0)},uniquingKeysWith:{a,_ in a}); return library.history.compactMap{lookup[$0]}
         case .search:return all
-        case .sources:return []
+        case .guide:return all.filter{$0.kind == .live}
+        case .sources,.settings:return []
         }
     }
     private var scoped:[Media] {base.filter{sourceFilter == "All sources" || $0.sourceID.uuidString == sourceFilter}}
     private var groups:[String] {Array(Set(scoped.map(\.group))).sorted()}
     private var shown:[Media] {scoped.filter{(filter == "All groups" || $0.group == filter) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query))}}
     var body:some View {
-        NavigationStack {
-            VStack(alignment:.leading,spacing:16) {
-                HStack {
-                    Image(systemName:"play.tv.fill").foregroundStyle(.cyan)
-                    Text("Stream Lounge TV").font(.title2.bold())
-                    Spacer()
-                    if library.busy {ProgressView().scaleEffect(0.7)}
-                    Text("\(library.media.count) items").foregroundStyle(.secondary).font(.caption)
-                }
-                HStack(spacing:18) {ForEach(Page.allCases,id:\.self){p in Button {page=p;filter="All groups";sourceFilter="All sources";query=""} label:{Text(p.rawValue).font(.headline).foregroundStyle(page == p ? Color.cyan : Color.primary)} }}
-                Divider()
-                if !library.message.isEmpty {Text(library.message).font(.caption).foregroundStyle(.yellow)}
-                if page == .sources {sourceView}
-                else if page == .home && base.isEmpty {VStack(alignment:.leading,spacing:28){Text("Your television, your library.").font(.largeTitle.bold());Text("Add an M3U playlist or an Xtream account to begin.").foregroundStyle(.secondary);Button("Add a source"){add=true}}.padding(.top,80);Spacer()}
+        HStack(alignment:.top,spacing:0) {
+            if !expanded {
+                VStack(alignment:.leading,spacing:18) {
+                    Label("Stream Lounge",systemImage:"play.tv.fill").font(.headline).foregroundStyle(.cyan)
+                    ScrollView { VStack(alignment:.leading,spacing:9) {
+                        ForEach(Page.allCases,id:\.self){p in
+                            Button { if p != page { playback.stop(); selected=nil }; page=p;filter="All groups";sourceFilter="All sources";query="" } label:{
+                                Label(p.rawValue,systemImage:pageIcon(p)).font(.callout).frame(maxWidth:.infinity,alignment:.leading).foregroundStyle(page == p ? Color.cyan : Color.primary)
+                            }
+                        }
+                    }.padding(8) }
+                    Text("v0.2.0").font(.caption2).foregroundStyle(.secondary)
+                }.padding(26).frame(width:320).frame(maxHeight:.infinity).background(Color.white.opacity(0.045))
+            }
+            VStack(alignment:.leading,spacing:14) {
+                if !expanded { HStack {Text(page.rawValue).font(.title.bold());Spacer();if library.busy {ProgressView()};Text("\(library.media.count) items").font(.caption).foregroundStyle(.secondary)} }
+                if !library.message.isEmpty && !expanded {Text(library.message).font(.caption).foregroundStyle(.yellow)}
+                if page == .settings {SettingsView(library:library)}
+                else if page == .sources {sourceView}
+                else if page == .live {liveView}
+                else if page == .guide {guideBrowser}
+                else if page == .home {dashboard}
                 else {browseView}
-            }.padding(48).background(LinearGradient(colors:[Color(red:0.04,green:0.11,blue:0.17),.black],startPoint:.topLeading,endPoint:.bottomTrailing).ignoresSafeArea())
-            .navigationTitle("")
-        }
+            }.padding(expanded ? 0 : 30).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+        }.background(backgroundColor.ignoresSafeArea()).onExitCommand {if expanded {expanded=false} else if selected != nil {playback.stop();selected=nil} else {page = .home}}
         .fullScreenCover(item:$play){item in Playback(item:item)}
         .sheet(item:$details){item in SeriesView(item:item,library:library)}
         .sheet(item:$guideItem){item in GuideView(item:item,library:library)}
@@ -109,6 +121,44 @@ struct Home:View {
         .sheet(isPresented:$add){SourceEditor(library:library,source:Source(name:"",address:"",type:"M3U URL"))}
         .alert("Remove source?",isPresented:Binding(get:{removeSource != nil},set:{if !$0 {removeSource=nil}})){Button("Remove",role:.destructive){if let s=removeSource{library.remove(s)};removeSource=nil};Button("Cancel",role:.cancel){removeSource=nil}}
     }
+    private var backgroundColor:Color { appearance == "Black OLED" ? .black : Color(red:0.055,green:0.075,blue:0.12) }
+    private func pageIcon(_ p:Page)->String { switch p {case .home:return "house";case .live:return "tv";case .guide:return "calendar";case .movies:return "film";case .series:return "play.rectangle.on.rectangle";case .favorites:return "star";case .history:return "clock";case .search:return "magnifyingglass";case .sources:return "list.bullet";case .settings:return "gearshape"} }
+    private func selectChannel(_ item:Media) { selected=item;library.watched(item);playback.start(item) }
+    private var channelFilters:some View {
+        VStack(alignment:.leading,spacing:10) {
+            Picker("Source",selection:$sourceFilter){Text("All sources").tag("All sources");ForEach(library.sources){s in Text(s.name).tag(s.id.uuidString)}}.onChange(of:sourceFilter){_ in filter="All groups"}
+            Text("Categories").font(.caption).foregroundStyle(.secondary)
+            ScrollView {LazyVStack(alignment:.leading,spacing:12){ForEach(["All groups"]+groups,id:\.self){g in Button {filter=g} label:{Text(g).font(.caption).lineLimit(1).frame(maxWidth:.infinity,alignment:.leading).foregroundStyle(filter == g ? Color.cyan : Color.primary)}}.padding(8)}}
+        }.frame(width:280)
+    }
+    private var liveView:some View {
+        HStack(alignment:.top,spacing:22) {
+            if !expanded {
+                channelFilters
+                VStack(alignment:.leading,spacing:12) {
+                    TextField("Search channels",text:$query).font(.caption)
+                    ScrollView {LazyVStack(alignment:.leading,spacing:11){ForEach(shown){item in Button{selectChannel(item)}label:{HStack{if let logo=httpURL(item.logo){AsyncImage(url:logo){image in image.resizable().scaledToFit()}placeholder:{Image(systemName:"tv")}.frame(width:62,height:40)}else{Image(systemName:"tv").frame(width:62)};Text(item.name).font(.caption).lineLimit(2);Spacer();if library.favorites.contains(item.id){Image(systemName:"star.fill").foregroundStyle(.yellow)}}.foregroundStyle(selected?.id == item.id ? Color.cyan : Color.primary).frame(maxWidth:.infinity,alignment:.leading)}.contextMenu{Button(library.favorites.contains(item.id) ? "Remove favorite" : "Add favorite"){library.toggle(item)}}}.padding(8)}}
+                }.frame(width:370)
+            }
+            VStack(alignment:.leading,spacing:14) {
+                if let item=selected {
+                    PlayerSurface(session:playback).aspectRatio(16/9,contentMode:.fit).frame(maxWidth:.infinity,maxHeight:expanded ? .infinity : 500).background(.black)
+                    HStack{Text(item.name).font(.headline).lineLimit(1);Spacer();Button(expanded ? "Exit fullscreen" : "Fullscreen"){expanded.toggle()}.font(.caption);Button{library.toggle(item)}label:{Image(systemName:library.favorites.contains(item.id) ? "star.fill" : "star")}}
+                    HStack{Button("Previous"){step(-1)};Button("Next"){step(1)};Button("Switch player"){playback.switchEngine()};Button("Play / Pause"){playback.togglePause()}}.font(.caption2)
+                    Text(playback.status).font(.caption2).foregroundStyle(.secondary)
+                    if !expanded {programmePanel(item)}
+                } else {Spacer();Image(systemName:"tv").font(.largeTitle);Text("Select a channel to play").font(.headline);Spacer()}
+            }.frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+        }
+    }
+    private func step(_ delta:Int) {guard let item=selected,let i=shown.firstIndex(where:{$0.id==item.id}),shown.indices.contains(i+delta)else{return};selectChannel(shown[i+delta])}
+    private func programmePanel(_ item:Media)->some View {
+        let programmes=library.guide.filter{library.guideSource==item.sourceID && $0.channel==item.tvg && $0.end>Date()}.sorted{$0.start<$1.start}
+        return VStack(alignment:.leading,spacing:10){HStack{Text("Programme guide").font(.headline);Spacer();Button("Load guide"){if let s=library.sources.first(where:{$0.id==item.sourceID}){Task{await library.loadGuide(s)}}}.font(.caption2).disabled(library.busy)};if programmes.isEmpty{Text("No programme data. Add an XMLTV URL in Playlists.").font(.caption).foregroundStyle(.secondary)}else{ScrollView(.horizontal){HStack{ForEach(Array(programmes.prefix(12))){p in VStack(alignment:.leading){Text(p.start.formatted(date:.omitted,time:.shortened));Text(p.title).lineLimit(2)}.font(.caption2).padding(10).frame(width:240,height:90,alignment:.topLeading).background(p.start<=Date() ? Color.blue.opacity(0.45) : Color.white.opacity(0.08))}}}}}
+    }
+    private var guideBrowser:some View {HStack(alignment:.top,spacing:22){channelFilters;ScrollView{LazyVStack(alignment:.leading,spacing:14){ForEach(shown){item in Button{guideItem=item}label:{HStack{Text(item.name).frame(width:360,alignment:.leading);Text(library.guide.first{library.guideSource==item.sourceID && $0.channel==item.tvg && $0.start<=Date() && $0.end>Date()}?.title ?? "No programme data").foregroundStyle(.secondary);Spacer()}.font(.caption)}}.padding(12)}}}}
+    private var dashboard:some View {ScrollView{VStack(alignment:.leading,spacing:25){if library.sources.isEmpty{Text("Add your first playlist").font(.title2);Button("Add playlist"){add=true}}else{HStack{ForEach([Page.live,.movies,.series,.sources],id:\.self){p in Button{page=p}label:{Label(p.rawValue,systemImage:pageIcon(p))}}};dashboardRow("Recently viewed",base);dashboardRow("Favorites",library.media.filter{library.favorites.contains($0.id)});dashboardRow("Movies",library.media.filter{$0.kind == .movie});dashboardRow("Series",library.media.filter{$0.kind == .series})}}}}
+    private func dashboardRow(_ title:String,_ items:[Media])->some View {VStack(alignment:.leading,spacing:10){Text(title).font(.title3.bold());if items.isEmpty{Text("Nothing here yet").font(.caption).foregroundStyle(.secondary)}else{ScrollView(.horizontal){HStack(spacing:25){ForEach(Array(items.prefix(20))){item in Button{if item.kind == .series{details=item}else if item.kind == .live{page = .live;selectChannel(item)}else{library.watched(item);play=item}}label:{MediaTile(item:item,favorite:library.favorites.contains(item.id)).frame(width:230)}.buttonStyle(.card)}}.padding(16)}}}}
     private var browseView:some View {
         HStack(alignment:.top,spacing:30){
             VStack(alignment:.leading,spacing:10){
@@ -122,7 +172,7 @@ struct Home:View {
                 TextField("Search channels, movies or series",text:$query)
                 if shown.isEmpty {Text("No items in this view.").foregroundStyle(.secondary);Spacer()}
                 else {ScrollView {LazyVGrid(columns:[GridItem(.adaptive(minimum:240),spacing:22)],spacing:35){ForEach(shown){item in
-                    Button {if item.kind == .series {details=item} else {library.watched(item);play=item}} label:{MediaTile(item:item,favorite:library.favorites.contains(item.id))}
+                    Button {if item.kind == .series {details=item} else if item.kind == .live {page = .live;filter="All groups";sourceFilter="All sources";query="";selectChannel(item)} else {library.watched(item);play=item}} label:{MediaTile(item:item,favorite:library.favorites.contains(item.id))}
                         .buttonStyle(.card)
                         .contextMenu {Button(library.favorites.contains(item.id) ? "Remove favorite" : "Add favorite"){library.toggle(item)};if item.kind == .live {Button("Programme guide"){guideItem=item}}}
                 }}}}
@@ -168,12 +218,4 @@ struct SeriesView:View {
 struct GuideView:View {
     let item:Media; @ObservedObject var library:Library; @Environment(\.dismiss) private var dismiss
     var body:some View{VStack(alignment:.leading,spacing:24){HStack{Text(item.name).font(.title.bold());Spacer();Button("Close"){dismiss()}};Button("Load XMLTV guide"){if let s=library.sources.first(where:{$0.id==item.sourceID}){Task{await library.loadGuide(s)}}}.disabled(library.busy);if library.busy{ProgressView()};Text(library.message).font(.caption);ScrollView{LazyVStack(alignment:.leading){ForEach(library.guide.filter{library.guideSource == item.sourceID && $0.channel==item.tvg && $0.end>Date()}.sorted{$0.start<$1.start}){p in HStack{Text(p.start.formatted(date:.abbreviated,time:.shortened)).foregroundStyle(.secondary);Text(p.title).font(.headline)}}}}}.padding(65)}
-}
-struct Playback:View {
-    let item:Media
-    @Environment(\.dismiss) private var dismiss
-    @State private var player=AVPlayer()
-    @State private var status=""
-    @State private var observation:NSKeyValueObservation?
-    var body:some View {ZStack(alignment:.topLeading){Color.black.ignoresSafeArea();VideoPlayer(player:player).ignoresSafeArea();if !status.isEmpty{VStack(alignment:.leading){Text(status).font(.headline);Button("Close player"){dismiss()}}.padding(60).background(.black.opacity(0.9))}}.onAppear{guard let url=httpURL(item.url)else{status="Invalid stream URL";return};let current=AVPlayerItem(url:url);observation=current.observe(\.status,options:[.initial,.new]){entry,_ in if entry.status == .failed {DispatchQueue.main.async{status="Playback failed. The provider may require a different format or codec."}}};player.replaceCurrentItem(with:current);player.play()}.onDisappear{observation=nil;player.pause();player.replaceCurrentItem(with:nil)}.onExitCommand{dismiss()}}
 }
